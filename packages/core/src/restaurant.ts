@@ -30,9 +30,9 @@ export const restaurant = {
   phoneHref: 'tel:+15163126987',
   mapsUrl: 'https://maps.google.com/?q=Shawarma+Bay+786+Grand+Blvd+Deer+Park+NY+11729',
   timeZone: 'America/New_York',
-  // Taken from the Clover Online page on 2026-10-28, which showed 11 AM to 9 PM.
-  // Confirm the full week with Shahzeb before launch.
-  hours: everyDay('11:00', '21:00'),
+  // Google lists 11 AM to 1 AM every day (shared by Jaan on 2026-10-28); closing runs past
+  // midnight. The Clover Online page showed 9 PM, so confirm the online ordering hours with Shahzeb.
+  hours: everyDay('11:00', '01:00'),
   /** Minutes the kitchen needs for an ASAP order. */
   prepMinutes: 20,
   /** Stop taking orders this many minutes before closing. */

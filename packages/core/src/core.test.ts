@@ -26,38 +26,49 @@ import {
 
 // 2026-10-28 is a Wednesday; New York is on EDT (UTC-4) until Nov 1.
 const at = (localTime: string) => new Date(`2026-10-28T${localTime}:00-04:00`);
+/** Thursday, just after Wednesday night's midnight. */
+const thu = (localTime: string) => new Date(`2026-10-29T${localTime}:00-04:00`);
+
+const weekOf = (open: string, close: string): WeeklyHours => ({
+  sun: [[open, close]], mon: [[open, close]], tue: [[open, close]], wed: [[open, close]],
+  thu: [[open, close]], fri: [[open, close]], sat: [[open, close]],
+});
 
 describe('hours', () => {
-  it('knows when the restaurant is open', () => {
+  it('is open from 11 AM until 1 AM the next morning', () => {
     expect(isOpen(at('10:59'))).toBe(false);
     expect(isOpen(at('11:00'))).toBe(true);
-    expect(isOpen(at('20:59'))).toBe(true);
-    expect(isOpen(at('21:00'))).toBe(false);
+    expect(isOpen(at('23:59'))).toBe(true);
+    expect(isOpen(thu('00:59'))).toBe(true);
+    expect(isOpen(thu('01:00'))).toBe(false);
+    expect(isOpen(thu('10:59'))).toBe(false);
   });
 
-  it('stops taking orders shortly before closing', () => {
-    expect(isAcceptingOrders(at('20:40'))).toBe(true);
-    expect(isAcceptingOrders(at('20:46'))).toBe(false);
+  it('stops taking orders shortly before closing, after midnight', () => {
+    expect(isAcceptingOrders(at('23:50'))).toBe(true);
+    expect(isAcceptingOrders(thu('00:40'))).toBe(true);
+    expect(isAcceptingOrders(thu('00:46'))).toBe(false);
   });
 
-  it('handles windows that run past midnight', () => {
-    const late: WeeklyHours = {
-      sun: [['11:00', '01:00']], mon: [['11:00', '01:00']], tue: [['11:00', '01:00']],
-      wed: [['11:00', '01:00']], thu: [['11:00', '01:00']], fri: [['11:00', '01:00']], sat: [['11:00', '01:00']],
-    };
-    expect(minutesUntilClose(at('23:30'), late)).toBe(90);
-    expect(minutesUntilClose(new Date('2026-10-29T00:30:00-04:00'), late)).toBe(30);
-    expect(minutesUntilClose(new Date('2026-10-29T01:30:00-04:00'), late)).toBeNull();
+  it('counts down to a close that runs past midnight', () => {
+    expect(minutesUntilClose(at('23:30'))).toBe(90);
+    expect(minutesUntilClose(thu('00:30'))).toBe(30);
+    expect(minutesUntilClose(thu('01:30'))).toBeNull();
   });
 
-  it('offers pickup slots after prep time and before the cutoff', () => {
-    const slots = pickupSlots(at('20:00'));
-    expect(slots[0]).toBe(at('20:30').toISOString());
-    expect(slots.at(-1)).toBe(at('20:45').toISOString());
+  it('offers late pickup slots past midnight, up to the cutoff', () => {
+    const slots = pickupSlots(at('23:30'));
+    expect(slots[0]).toBe(thu('00:00').toISOString());
+    expect(slots.at(-1)).toBe(thu('00:45').toISOString());
   });
 
   it('offers no slots after closing and the next day is not included', () => {
-    expect(pickupSlots(at('21:30'))).toEqual([]);
+    expect(pickupSlots(at('21:30'), { hours: weekOf('11:00', '21:00') })).toEqual([]);
+  });
+
+  it('after closing at 1 AM, offers the same day from opening', () => {
+    const slots = pickupSlots(thu('01:30'));
+    expect(slots[0]).toBe(thu('11:00').toISOString());
   });
 
   it('starts the day at opening when ordering ahead in the morning', () => {
@@ -66,7 +77,13 @@ describe('hours', () => {
   });
 
   it('labels the hours', () => {
-    expect(hoursLabel(at('12:00'))).toBe('11:00 AM – 9:00 PM');
+    expect(hoursLabel(at('12:00'))).toBe('11:00 AM – 1:00 AM');
+  });
+
+  it('labels the night that is still running just after midnight', () => {
+    const hours: WeeklyHours = { ...weekOf('11:00', '01:00'), wed: [['11:00', '02:00']] };
+    expect(hoursLabel(thu('01:30'), hours)).toBe('11:00 AM – 2:00 AM');
+    expect(hoursLabel(thu('02:30'), hours)).toBe('11:00 AM – 1:00 AM');
   });
 });
 
@@ -137,7 +154,8 @@ describe('order requests', () => {
     expect(() => parseOrderRequest({ ...body, customer: { name: 'A', phone: '123' } }, at('12:00'))).toThrow(
       RequestError,
     );
-    expect(() => parseOrderRequest(body, at('22:00'))).toThrow(/not taking ASAP/);
+    expect(() => parseOrderRequest(body, thu('00:50'))).toThrow(/not taking ASAP/);
+    expect(() => parseOrderRequest(body, thu('02:00'))).toThrow(/not taking ASAP/);
   });
 
   it('accepts scheduled pickups within hours only', () => {
@@ -145,7 +163,11 @@ describe('order requests', () => {
     expect(parseOrderRequest(ok, at('12:00')).pickup).toEqual({ type: 'scheduled', time: at('13:00').toISOString() });
     const tooSoon = { ...body, pickup: { type: 'scheduled', time: at('12:05').toISOString() } };
     expect(() => parseOrderRequest(tooSoon, at('12:00'))).toThrow(/no longer available/);
-    const afterClose = { ...body, pickup: { type: 'scheduled', time: at('21:15').toISOString() } };
+    const lateNight = { ...body, pickup: { type: 'scheduled', time: thu('00:30').toISOString() } };
+    expect(parseOrderRequest(lateNight, at('23:30')).pickup).toEqual({ type: 'scheduled', time: thu('00:30').toISOString() });
+    const pastCutoff = { ...body, pickup: { type: 'scheduled', time: thu('00:50').toISOString() } };
+    expect(() => parseOrderRequest(pastCutoff, at('12:00'))).toThrow(/no longer available/);
+    const afterClose = { ...body, pickup: { type: 'scheduled', time: thu('01:15').toISOString() } };
     expect(() => parseOrderRequest(afterClose, at('12:00'))).toThrow(/no longer available/);
   });
 

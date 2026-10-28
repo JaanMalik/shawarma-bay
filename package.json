@@ -5,14 +5,16 @@
   "workspaces": [
     "packages/*",
     "web",
-    "mobile"
+    "mobile",
+    "demo"
   ],
   "scripts": {
     "dev": "npm run dev --workspace web",
     "build": "npm run build --workspace web",
     "mobile": "npm run start --workspace mobile",
     "test": "vitest run",
-    "typecheck": "tsc -p packages/core --noEmit && tsc -p web --noEmit && tsc -p mobile --noEmit"
+    "typecheck": "tsc -p packages/core --noEmit && tsc -p web --noEmit && tsc -p mobile --noEmit && tsc -p demo",
+    "demo": "npm run build --workspace demo"
   },
   "devDependencies": {
     "vitest": "^4.0.0"

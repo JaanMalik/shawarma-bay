@@ -46,7 +46,7 @@ export function SiteFooter() {
       </div>
       {publicConfig.demo && (
         <p className="bg-ember px-4 py-2 text-center text-xs font-semibold text-white">
-          Demo mode: orders are not sent to the restaurant and no cards are charged.
+          Demo mode: no cards are charged, and orders aren&rsquo;t sent to Clover yet.
         </p>
       )}
     </footer>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { formatMoney, formatTime, type OrderView } from '@shawarma-bay/core';
 
@@ -17,7 +17,7 @@ const CHIME_REPEAT_MS = 20_000;
  * Online orders for the restaurant's iPad. Orders are read from Clover every 10 seconds. Which
  * orders are being made or done is remembered on this device only.
  */
-export function KitchenScreen() {
+export function KitchenScreen({ pollMs = POLL_MS }: { pollMs?: number }) {
   const [auth, setAuth] = useState<'checking' | 'locked' | 'open'>('checking');
   const [orders, setOrders] = useState<OrderView[]>([]);
   const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -44,9 +44,9 @@ export function KitchenScreen() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- first load of the order feed
     void load();
-    const timer = setInterval(load, POLL_MS);
+    const timer = setInterval(load, pollMs);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, pollMs]);
 
   if (auth === 'checking') return <p className="p-8 text-white/60">Loading…</p>;
   if (auth === 'locked') return <PinPad onUnlocked={load} />;
@@ -156,13 +156,18 @@ function Board({ orders, lastSync, offline }: { orders: OrderView[]; lastSync: D
   const stageOf = (o: OrderView): Stage => stages[o.id] ?? 'new';
   const active = orders.filter((o) => stageOf(o) !== 'done').sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const done = orders.filter((o) => stageOf(o) === 'done');
-  const newCount = active.filter((o) => stageOf(o) === 'new').length;
+  const newIds = active.filter((o) => stageOf(o) === 'new').map((o) => o.id);
+  const newCount = newIds.length;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const muted = useSyncExternalStore(subscribeAudio, audioBlocked, () => false);
 
   useWakeLock();
-  useChime(sound && newCount > 0);
+  // Turning sound on (or the first tap after a reload) chimes right away if an order is waiting.
+  useChime(newIds, sound && !muted);
+  useUnlockOnTap(rootRef);
 
   return (
-    <div className="flex min-h-dvh flex-col">
+    <div ref={rootRef} className="flex min-h-dvh flex-col">
       <header className="flex items-center justify-between gap-4 border-b border-white/10 px-5 py-3">
         <div className="flex items-center gap-3">
           <LogoMark size={36} />
@@ -179,7 +184,8 @@ function Board({ orders, lastSync, offline }: { orders: OrderView[]; lastSync: D
             type="button"
             onClick={() => {
               unlockAudio();
-              setSound(!sound);
+              // While the browser is still blocking sound, this tap only turns it on.
+              if (!muted || !sound) setSound(!sound);
             }}
             className={`rounded-full px-3 py-1.5 font-semibold ${sound ? 'bg-white/15 text-white' : 'bg-[#5a2a24] text-white'}`}
           >
@@ -187,6 +193,12 @@ function Board({ orders, lastSync, offline }: { orders: OrderView[]; lastSync: D
           </button>
         </div>
       </header>
+
+      {sound && muted && (
+        <button type="button" onClick={unlockAudio} className="bg-[#5a2a24] px-4 py-2.5 text-center font-semibold">
+          Tap anywhere to turn on the new-order chime
+        </button>
+      )}
 
       {publicConfig.demo && (
         <p className="bg-ember px-4 py-1.5 text-center text-sm font-semibold">
@@ -302,15 +314,45 @@ function OrderTicket({ order, stage, onStage }: { order: OrderView; stage: Stage
 // ---- Sound and screen ----
 
 let audio: AudioContext | null = null;
+const audioListeners = new Set<() => void>();
+const notifyAudio = () => audioListeners.forEach((listener) => listener());
 
-/** Browsers only allow sound after a tap, so this runs on the PIN entry and the sound button. */
+function subscribeAudio(listener: () => void) {
+  audioListeners.add(listener);
+  return () => {
+    audioListeners.delete(listener);
+  };
+}
+
+/** True until a tap lets the browser play sound (again after a reload, or when iPadOS suspends it). */
+function audioBlocked() {
+  return typeof AudioContext !== 'undefined' && audio?.state !== 'running';
+}
+
+/** Browsers only allow sound after a tap, so this runs on the PIN entry and on any tap on the board. */
 function unlockAudio() {
   try {
-    audio ??= new AudioContext();
-    void audio.resume();
+    if (!audio) {
+      audio = new AudioContext();
+      audio.addEventListener('statechange', notifyAudio);
+    }
+    void audio.resume().finally(notifyAudio);
   } catch {
     // No Web Audio; the screen still flashes.
   }
+}
+
+/** Any tap or key press on the order screen turns sound on, so a reloaded iPad needs one touch. */
+function useUnlockOnTap(ref: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const doc = ref.current?.ownerDocument ?? document;
+    doc.addEventListener('pointerup', unlockAudio);
+    doc.addEventListener('keydown', unlockAudio);
+    return () => {
+      doc.removeEventListener('pointerup', unlockAudio);
+      doc.removeEventListener('keydown', unlockAudio);
+    };
+  }, [ref]);
 }
 
 function playChime() {
@@ -331,15 +373,22 @@ function playChime() {
   });
 }
 
-function useChime(active: boolean) {
-  const activeRef = useRef(active);
+/** Chimes as soon as an order arrives, then every 20 seconds while any order is still new. */
+function useChime(newIds: string[], enabled: boolean) {
+  const heard = useRef(new Set<string>());
+  const wasEnabled = useRef(enabled);
+  const key = newIds.join(',');
   useEffect(() => {
-    activeRef.current = active;
-    if (!active) return;
-    playChime();
-    const timer = setInterval(() => activeRef.current && playChime(), CHIME_REPEAT_MS);
+    const ids = key ? key.split(',') : [];
+    const arrived = ids.some((id) => !heard.current.has(id));
+    ids.forEach((id) => heard.current.add(id));
+    const turnedOn = enabled && !wasEnabled.current;
+    wasEnabled.current = enabled;
+    if (!enabled || ids.length === 0) return;
+    if (arrived || turnedOn) playChime();
+    const timer = setInterval(playChime, CHIME_REPEAT_MS);
     return () => clearInterval(timer);
-  }, [active]);
+  }, [key, enabled]);
 }
 
 /** Keeps the iPad screen from sleeping while the order screen is open. */

@@ -1,0 +1,24 @@
+{
+  "name": "demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The website, the app, and the iPad order screen together in one clickable page, built from the real code.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/package-artifact.mjs",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@shawarma-bay/core": "*",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-native-web": "~0.21.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-react": "6.1.2",
+    "tailwindcss": "^4",
+    "vite": "^8.3.4"
+  }
+}

@@ -78,7 +78,7 @@ export default function MenuScreen() {
                   {restaurant.address.line1} · {restaurant.phone}
                 </Text>
               </Pressable>
-              {config?.demo && <Text style={styles.demo}>Demo mode: orders don&apos;t reach the restaurant.</Text>}
+              {config?.demo && <Text style={styles.demo}>Demo mode: orders aren&apos;t sent to Clover yet.</Text>}
             </View>
             <ScrollView
               horizontal
