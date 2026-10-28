@@ -9,6 +9,7 @@ existing Clover merchant account.
 packages/core   Shared menu, pricing, hours, and order rules (TypeScript, tested)
 web             Next.js website + the API the app uses + the iPad order screen (/kitchen)
 mobile          Expo (React Native) app for iPhone and Android
+demo            One clickable page with the website, app, and iPad order screen together
 ```
 
 ## How an order flows
@@ -49,6 +50,22 @@ Mobile app:
 cp mobile/.env.example mobile/.env    # set EXPO_PUBLIC_API_URL to your computer's LAN IP
 npm run mobile                        # then scan the QR code with Expo Go
 ```
+
+## Clickable demo
+
+`demo/` shows the real website, the app (through react-native-web), and the iPad order screen
+together on one page, for walking the restaurant through ordering. The website's API route
+handlers run in the browser in demo mode, so it needs no server.
+
+```bash
+npm run demo                    # writes demo/dist/shawarma-bay-demo.html, one self-contained page
+npm run dev --workspace demo    # live-reloading version on http://localhost:5173
+```
+
+The page is published as a claude.ai Artifact. There, orders are saved in the Artifact's shared
+database, so an order placed on a phone shows up on the order screen open on another device;
+anywhere else they stay in that browser. **Reset demo** clears test orders, carts, and saved
+names. The order screen PIN is **1234**.
 
 ## Connecting the real Clover account
 
@@ -96,11 +113,13 @@ that runs `next build` / `next start` works too.
 
 1. Open `https://<your-site>/kitchen` in Safari and enter the PIN.
 2. Share → **Add to Home Screen**, then open it from the home screen (full screen).
-3. Tap **Sound on** once so the chime can play (browsers need one tap first).
+3. Tap the screen once so the chime can play. Browsers need a tap before they play sound, so
+   after the page reloads a "Tap anywhere to turn on the new-order chime" bar shows until
+   someone touches the screen.
 4. Settings → Display & Brightness → Auto-Lock → **Never**, and keep the iPad plugged in.
 
-New orders flash with a chime every 20 seconds until someone taps **Start**; **Ready** moves
-the order to "Done today". This progress is remembered on that iPad only.
+New orders flash and chime as they arrive, then every 20 seconds until someone taps **Start**;
+**Ready** moves the order to "Done today". This progress is remembered on that iPad only.
 
 ## Publishing the app
 

@@ -21,6 +21,7 @@ import {
 } from '@shawarma-bay/core';
 
 import { placeOrder, useQuote } from '@/lib/api-client';
+import { openApp } from '@/lib/open-app';
 import { publicConfig } from '@/lib/public-config';
 
 import { CardFields, type CardFieldsHandle } from './card-fields';
@@ -120,8 +121,7 @@ export function AppPayForm({ handoff }: { handoff: CheckoutHandoff }) {
       forceCard
       onPlaced={(id) => {
         setDoneId(id);
-        // Opens the app (a custom URL scheme), not a page on this site.
-        window.location.href = appReturnUrl(id);
+        openApp(appReturnUrl(id));
       }}
     />
   );
@@ -436,7 +436,7 @@ function PaymentStep({ lines, editable, customer, fixed, forceCard, onPlaced }: 
                 : 'Place order'}
           </button>
           {publicConfig.demo && (
-            <p className="mt-3 text-center text-xs text-smoke">Demo mode: this order won&rsquo;t reach the restaurant.</p>
+            <p className="mt-3 text-center text-xs text-smoke">Demo mode: no card is charged, and this order isn&rsquo;t sent to Clover.</p>
           )}
         </div>
       </aside>

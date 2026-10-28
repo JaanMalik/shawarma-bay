@@ -231,7 +231,7 @@ export default function CartScreen() {
           loading={busy}
           disabled={!quote || closed || methods.length === 0}
         />
-        {config?.demo && <Text style={[styles.muted, { textAlign: 'center', marginTop: 6 }]}>Demo mode: this order won&apos;t reach the restaurant.</Text>}
+        {config?.demo && <Text style={[styles.muted, { textAlign: 'center', marginTop: 6 }]}>Demo mode: no card is charged, and this order isn&apos;t sent to Clover.</Text>}
       </View>
     </KeyboardAvoidingView>
   );
