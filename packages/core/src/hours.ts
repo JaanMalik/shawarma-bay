@@ -38,6 +38,31 @@ function windowsFor(day: Weekday, hours: WeeklyHours): [number, number][] {
 }
 
 /**
+ * The opening window `date` falls in: the day it belongs to (yesterday, after midnight in a
+ * window that runs late) and the minutes left until it closes. Null when closed.
+ */
+function openWindowAt(
+  date: Date,
+  hours: WeeklyHours,
+  timeZone: string,
+): { day: Weekday; minutesLeft: number } | null {
+  const { weekday, minutes } = zonedParts(date, timeZone);
+  const today = WEEKDAYS.indexOf(weekday);
+  const yesterday = WEEKDAYS[(today + 6) % 7];
+  for (const [start, end] of windowsFor(weekday, hours)) {
+    if (minutes >= start && minutes < end) return { day: weekday, minutesLeft: end - minutes };
+  }
+  // A window that started yesterday and runs past midnight.
+  for (const [start, end] of windowsFor(yesterday, hours)) {
+    const shifted = minutes + 24 * 60;
+    if (end > 24 * 60 && shifted >= start && shifted < end) {
+      return { day: yesterday, minutesLeft: end - shifted };
+    }
+  }
+  return null;
+}
+
+/**
  * Minutes until closing if the restaurant is open at `date`, otherwise null.
  */
 export function minutesUntilClose(
@@ -45,18 +70,7 @@ export function minutesUntilClose(
   hours: WeeklyHours = restaurant.hours,
   timeZone: string = restaurant.timeZone,
 ): number | null {
-  const { weekday, minutes } = zonedParts(date, timeZone);
-  const today = WEEKDAYS.indexOf(weekday);
-  const yesterday = WEEKDAYS[(today + 6) % 7];
-  for (const [start, end] of windowsFor(weekday, hours)) {
-    if (minutes >= start && minutes < end) return end - minutes;
-  }
-  // A window that started yesterday and runs past midnight.
-  for (const [start, end] of windowsFor(yesterday, hours)) {
-    const shifted = minutes + 24 * 60;
-    if (end > 24 * 60 && shifted >= start && shifted < end) return end - shifted;
-  }
-  return null;
+  return openWindowAt(date, hours, timeZone)?.minutesLeft ?? null;
 }
 
 export function isOpen(date: Date, hours: WeeklyHours = restaurant.hours): boolean {
@@ -123,10 +137,13 @@ function windowLabel([open, close]: [string, string]): string {
   return `${formatClock(open)} – ${formatClock(close)}`;
 }
 
-/** "11:00 AM – 9:00 PM" for the restaurant's local day containing `date`. */
+/**
+ * "11:00 AM – 1:00 AM" for the restaurant's day at `date`. Just after midnight, while the
+ * previous day's late hours are still running, that is the previous day.
+ */
 export function hoursLabel(date: Date, hours: WeeklyHours = restaurant.hours): string {
-  const { weekday } = zonedParts(date);
-  const windows = hours[weekday];
+  const day = openWindowAt(date, hours, restaurant.timeZone)?.day ?? zonedParts(date).weekday;
+  const windows = hours[day];
   if (windows.length === 0) return 'Closed today';
   return windows.map(windowLabel).join(', ');
 }

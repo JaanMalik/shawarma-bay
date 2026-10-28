@@ -94,8 +94,9 @@ to try the full flow, including the kitchen printer, before touching the real ac
 - [ ] **Token refresh.** Clover's OAuth access tokens expire and must be renewed with a
       single-use refresh token. This needs a small database to keep the latest token (for
       example Supabase or Vercel KV). Not built yet: `CLOVER_API_TOKEN` is a fixed token today.
-- [ ] Confirm the opening hours for every day (`packages/core/src/restaurant.ts` assumes
-      11 AM to 9 PM daily, from the Clover Online page on 2026-10-28).
+- [ ] Confirm the hours with Shahzeb. `packages/core/src/restaurant.ts` uses 11 AM to 1 AM
+      every day, from Google. The Clover Online page showed 9 PM, so check whether online
+      orders should stop before the restaurant closes.
 - [ ] Confirm the options for "Customized Combo (Choice of Two)" are set up as a modifier
       group in Clover (the built-in menu guesses them).
 - [ ] Replace the placeholder dish descriptions in `packages/core/src/menu-extras.ts` and the
