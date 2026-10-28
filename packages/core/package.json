@@ -1,0 +1,9 @@
+{
+  "name": "@shawarma-bay/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Menu, cart pricing, hours, and order types shared by the website and the mobile app.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "sideEffects": false
+}

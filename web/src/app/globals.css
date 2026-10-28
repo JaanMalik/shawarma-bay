@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+/*
+ * Shawarma Bay palette: the charcoal and orange of the storefront sign, on a warm paper
+ * background. The site keeps one look in light and dark system modes, like a printed menu.
+ */
+@theme {
+  --color-coal: #1c1714;
+  --color-coal-2: #2a231e;
+  --color-smoke: #6f655d;
+  --color-paper: #fbf6ef;
+  --color-card: #ffffff;
+  --color-line: #eadfd2;
+  --color-ember: #ea6a1c;
+  --color-ember-deep: #c4520c;
+  --color-ember-soft: #fde7d6;
+  --color-sumac: #8e2b2b;
+  --color-herb: #2f7a45;
+  --color-herb-soft: #e3f2e6;
+
+  --font-display: var(--font-barlow-condensed), 'Arial Narrow', sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 8rem;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-coal);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .display {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    line-height: 0.95;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    padding: 0.8rem 1.4rem;
+    font-weight: 700;
+    transition:
+      background-color 150ms,
+      transform 150ms,
+      opacity 150ms;
+  }
+  .btn:active {
+    transform: scale(0.98);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--color-ember);
+    color: white;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-ember-deep);
+  }
+  .btn-ghost {
+    border: 1.5px solid currentColor;
+  }
+
+  .field {
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1.5px solid var(--color-line);
+    background: white;
+    padding: 0.75rem 0.9rem;
+    font-size: 1rem;
+    outline: none;
+  }
+  .field:focus {
+    border-color: var(--color-ember);
+    box-shadow: 0 0 0 3px var(--color-ember-soft);
+  }
+
+  .card {
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+    border-radius: 1.25rem;
+  }
+}
+
+dialog::backdrop {
+  background: rgb(28 23 20 / 0.55);
+  backdrop-filter: blur(2px);
+}
