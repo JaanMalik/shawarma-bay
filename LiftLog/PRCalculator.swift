@@ -60,7 +60,7 @@ struct RepMax: Identifiable {
     let set: SetRecord
     var id: Int { reps }
     /// True when this rep max comes from a set with more reps (225 x 5 also counts as a 3-rep max).
-    var isInferred: Bool { set.reps > reps }
+    var isInferred: Bool { self.set.reps > reps }
 }
 
 struct EstimatePoint: Identifiable {
