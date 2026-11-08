@@ -13,6 +13,7 @@ struct ExerciseDetailView: View {
     @State private var showingLog = false
     @State private var editingSet: LiftSet?
     @State private var playingSet: LiftSet?
+    @State private var pendingSetDelete: LiftSet?
     @State private var showingEditor = false
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
@@ -123,6 +124,18 @@ struct ExerciseDetailView: View {
             VideoPlayerSheet(fileName: set.videoFileName ?? "", title: "\(unit.format(set.weight)) × \(set.reps)")
         }
         .sheet(isPresented: $showingEditor) { ExerciseEditorView(exercise: exercise) }
+        .confirmationDialog(
+            "Delete this set and its video?",
+            isPresented: Binding(get: { pendingSetDelete != nil }, set: { if !$0 { pendingSetDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingSetDelete
+        ) { set in
+            Button("Delete set and video", role: .destructive) {
+                delete(set)
+            }
+        } message: { _ in
+            Text("The video is removed from LiftLog too. A copy you kept in Photos isn't affected.")
+        }
     }
 
     @ViewBuilder
@@ -151,12 +164,20 @@ struct ExerciseDetailView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .swipeActions {
-                        Button(role: .destructive) {
-                            delete(set)
+                    // A set with a video asks first, since its video is deleted too. The button
+                    // has no destructive role on purpose: that role makes the row slide away
+                    // before the question is answered.
+                    .swipeActions(allowsFullSwipe: !set.hasVideo) {
+                        Button {
+                            if set.hasVideo {
+                                pendingSetDelete = set
+                            } else {
+                                delete(set)
+                            }
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
+                        .tint(.red)
                     }
                 }
             } header: {

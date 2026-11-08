@@ -78,9 +78,11 @@ enum EquipmentRules {
         case .figure:
             return .rep(travel: 0, up: 1, down: 1, hold: 0)
         case .dumbbell, .ezBar:
-            if n.contains("curl") { return .rep(travel: 22, tilt: -14, up: 0.8, down: 1.0, hold: 0.15) }
+            // Only a dumbbell tips as it moves. A curl bar is held with both hands, so it stays level.
+            let tips = equipment == .dumbbell
+            if n.contains("curl") { return .rep(travel: 22, tilt: tips ? -14 : 0, up: 0.8, down: 1.0, hold: 0.15) }
             if n.contains("tricep") || n.contains("extension") || n.contains("skull") {
-                return .rep(travel: 20, tilt: 10, up: 0.8, down: 1.0, hold: 0.15)
+                return .rep(travel: 20, tilt: tips ? 10 : 0, up: 0.8, down: 1.0, hold: 0.15)
             }
         case .barbell:
             break
@@ -95,7 +97,7 @@ enum EquipmentRules {
         case .legs: return .rep(travel: 20, up: 1.0, down: 1.2, hold: 0.1)
         case .chest, .shoulders: return .rep(travel: 28, up: 0.9, down: 1.1, hold: 0.25)
         case .back: return .rep(travel: 24, up: 0.9, down: 1.1, hold: 0.2)
-        case .arms: return .rep(travel: 22, tilt: equipment == .barbell ? 0 : -14, up: 0.8, down: 1.0, hold: 0.15)
+        case .arms: return .rep(travel: 22, tilt: equipment == .dumbbell ? -14 : 0, up: 0.8, down: 1.0, hold: 0.15)
         case .core, .other: return .rep(travel: 20)
         }
     }

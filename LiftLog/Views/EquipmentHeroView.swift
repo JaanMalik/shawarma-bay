@@ -333,7 +333,7 @@ private struct MachineScene: View {
             .offset(y: restingTop)
             .modifier(RepMotion(motion: motion, animate: animate))
         }
-        .frame(width: plateWidth + 40, height: sceneHeight)
+        .frame(width: plateWidth + 40, height: sceneHeight, alignment: .top)
     }
 
     private var rod: some View {

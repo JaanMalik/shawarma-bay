@@ -89,7 +89,12 @@ check(deadlift.startsOnFloor && deadlift.travel > 0, "deadlift starts from the f
 let dbCurl = EquipmentRules.motion(name: "Single-Arm Dumbbell Curl", category: .arms, equipment: .dumbbell)
 check(dbCurl.tilt != 0 && dbCurl.travel > 0, "dumbbell curl tilts as it rises")
 let preacher = EquipmentRules.motion(name: "Preacher Curl", category: .arms, equipment: .ezBar)
-check(preacher.tilt != 0, "preacher curl tilts")
+check(preacher.tilt == 0 && preacher.travel > 0, "preacher curl bar stays level")
+for name in ["Barbell Curl", "Skull Crusher", "EZ Bar Triceps Extension"] {
+    for equipment in [Equipment.barbell, .ezBar] {
+        check(EquipmentRules.motion(name: name, category: .arms, equipment: equipment).tilt == 0, "\(name) on a \(equipment.rawValue) stays level")
+    }
+}
 let bench = EquipmentRules.motion(name: "Bench Press", category: .chest, equipment: .barbell)
 check(bench.tilt == 0 && bench.travel > 0 && !bench.startsOnFloor, "bench press goes straight up and down")
 let legPress = EquipmentRules.motion(name: "Leg Press", category: .legs, equipment: .machine)

@@ -33,6 +33,7 @@ struct LogSetView: View {
     @State private var importingVideo = false
     @State private var videoError: String?
     @State private var playingVideo: VideoRef?
+    @State private var importTask: Task<Void, Never>?
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
 
@@ -201,26 +202,37 @@ struct LogSetView: View {
         } header: {
             Text("Video")
         } footer: {
-            Text("Pick a clip you recorded. It's copied into the app, so it stays even if you later delete it from Photos. Videos aren't included in the backup file.")
+            Text("Pick a clip you recorded. It's copied into the app, so it stays even if you later delete it from Photos. The backup file keeps which set has which video, but not the videos themselves.")
         }
     }
 
     private func importVideo(_ item: PhotosPickerItem) {
+        importTask?.cancel()
         importingVideo = true
         videoError = nil
-        Task {
+        importTask = Task {
             do {
                 guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
                     throw CocoaError(.fileReadUnknown)
                 }
+                // The sheet was closed while the clip was copying: throw the copy away.
+                guard !Task.isCancelled else {
+                    VideoStore.delete(movie.fileName)
+                    return
+                }
                 await VideoStore.makePoster(for: movie.fileName)
+                guard !Task.isCancelled else {
+                    VideoStore.delete(movie.fileName)
+                    return
+                }
                 if let old = pendingVideo {
                     VideoStore.delete(old)
                 }
                 pendingVideo = movie.fileName
-                removeSavedVideo = false
             } catch {
-                videoError = "Couldn't add that video. \(error.localizedDescription)"
+                if !Task.isCancelled {
+                    videoError = "Couldn't add that video. \(error.localizedDescription)"
+                }
             }
             importingVideo = false
             pickerItem = nil
@@ -236,19 +248,29 @@ struct LogSetView: View {
         }
     }
 
-    /// Cancel, swipe-down, or Done after a PR: anything picked but never saved is removed.
+    /// Cancel, swipe-down, or Done after a PR: anything picked but never saved is removed,
+    /// and a copy still in progress is thrown away when it finishes.
     private func discardPendingVideo() {
+        importTask?.cancel()
+        importTask = nil
         if let pendingVideo {
             VideoStore.delete(pendingVideo)
             self.pendingVideo = nil
         }
     }
 
-    /// Moves the sheet's video choice onto the set being saved.
+    /// Moves the sheet's video choice onto the set being saved. The set's old video is only
+    /// deleted once the new one is safely in place.
     private func applyVideo(to set: LiftSet) {
         if let pendingVideo {
-            VideoStore.delete(set.videoFileName)
-            set.videoFileName = VideoStore.adopt(pendingVideo, forSetID: set.id)
+            if let adopted = VideoStore.adopt(pendingVideo, forSetID: set.id) {
+                let old = set.videoFileName
+                set.videoFileName = adopted
+                if old != adopted { VideoStore.delete(old) }
+            } else if removeSavedVideo {
+                VideoStore.delete(set.videoFileName)
+                set.videoFileName = nil
+            }
             self.pendingVideo = nil
         } else if removeSavedVideo {
             VideoStore.delete(set.videoFileName)

@@ -40,8 +40,9 @@ Weights are stored in pounds and converted for display, so switching units never
 
 Videos are stored in the app's own folder on the phone, never uploaded. You can see and copy
 them in the Files app under **On My iPhone > LiftLog > Videos**, or in Finder on your Mac with
-the phone plugged in. The JSON backup has your sets but not the video files themselves.
-Deleting a set, or an exercise, deletes its videos.
+the phone plugged in. The JSON backup remembers which set has which video but doesn't contain
+the video files. To move to a new phone, copy the Videos folder over and restore the backup, in
+either order. Deleting a set, or an exercise, deletes its videos (a set with a video asks first).
 
 ## Install on your iPhone (free Apple ID)
 

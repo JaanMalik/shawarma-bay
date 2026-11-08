@@ -98,16 +98,18 @@ enum Backup {
     }
 
     /// Adds exercises and sets from a backup that aren't already in the app. Never deletes.
-    static func restore(from data: Data, into context: ModelContext, existing: [Exercise]) throws -> (exercises: Int, sets: Int) {
+    static func restore(from data: Data, into context: ModelContext, existing: [Exercise]) throws -> (exercises: Int, sets: Int, videos: Int) {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let file = try decoder.decode(BackupFile.self, from: data)
 
         var known = existing
         var seenSetIDs = Set(existing.flatMap { $0.sets.map(\.id) })
+        let existingSets = Dictionary(existing.flatMap(\.sets).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var nextOrder = (existing.map(\.sortOrder).max() ?? -1) + 1
         var addedExercises = 0
         var addedSets = 0
+        var relinkedVideos = 0
 
         for item in file.exercises {
             let target: Exercise
@@ -130,11 +132,20 @@ enum Backup {
                 target = ex
             }
 
+            // Sets already in the app: put back a video link that was lost, if the clip is on the phone.
+            for s in item.sets {
+                if let current = existingSets[s.id], current.videoFileName == nil, VideoStore.exists(s.videoFileName) {
+                    current.videoFileName = s.videoFileName
+                    relinkedVideos += 1
+                }
+            }
+
             for s in item.sets where !seenSetIDs.contains(s.id) {
                 let set = LiftSet(date: s.date, weight: s.weightLb, reps: s.reps, note: s.note)
                 set.id = s.id
-                // Re-link the video only if its file is still on this phone.
-                if VideoStore.exists(s.videoFileName) {
+                // Keep the video link even if the clip isn't on this phone yet: once it's copied back
+                // into LiftLog's Videos folder it shows up again. Until then the set shows "Video missing".
+                if VideoStore.isSafeName(s.videoFileName) {
                     set.videoFileName = s.videoFileName
                 }
                 context.insert(set)
@@ -144,6 +155,6 @@ enum Backup {
             }
         }
         try context.save()
-        return (addedExercises, addedSets)
+        return (addedExercises, addedSets, relinkedVideos)
     }
 }

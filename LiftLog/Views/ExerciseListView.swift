@@ -16,13 +16,15 @@ struct ExerciseListView: View {
     @State private var logTarget: Exercise?
     @State private var pendingDelete: Exercise?
     @State private var showArchived = false
+    @State private var path: [Exercise] = []
+    @State private var handledLaunchArgument = false
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
     private var active: [Exercise] { exercises.filter { !$0.isArchived } }
     private var archived: [Exercise] { exercises.filter { $0.isArchived } }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 ForEach(ExerciseCategory.allCases) { category in
                     let items = active.filter { $0.category == category }
@@ -85,8 +87,10 @@ struct ExerciseListView: View {
             }
             .task {
                 seedIfNeeded()
+                openFromLaunchArgument()
+                let referenced = Set(exercises.flatMap { $0.sets.compactMap(\.videoFileName) })
                 await Task.detached(priority: .utility) {
-                    VideoStore.removeStalePending()
+                    VideoStore.removeStalePending(keeping: referenced)
                 }.value
             }
         }
@@ -108,6 +112,16 @@ struct ExerciseListView: View {
                 Label(exercise.isArchived ? "Unarchive" : "Archive", systemImage: "archivebox")
             }
             .tint(.gray)
+        }
+    }
+
+    /// For screenshots and testing: launching with `-LiftLogOpen "Squat"` opens that exercise.
+    private func openFromLaunchArgument() {
+        guard !handledLaunchArgument else { return }
+        handledLaunchArgument = true
+        guard let name = UserDefaults.standard.string(forKey: "LiftLogOpen") else { return }
+        if let match = exercises.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            path = [match]
         }
     }
 

@@ -10,21 +10,25 @@ struct PosterImage: View {
     @State private var missing = false
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(Color(white: 0.12))
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: missing ? "video.slash" : "video.fill")
-                    .foregroundStyle(.white.opacity(0.7))
+        // The rectangle takes the size it's offered; the poster fills it and is cropped to it.
+        Rectangle()
+            .fill(Color(white: 0.12))
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: missing ? "video.slash" : "video.fill")
+                        .foregroundStyle(.white.opacity(0.7))
+                }
             }
-        }
-        .clipped()
+            .clipped()
+            .contentShape(Rectangle())
         .task(id: fileName) {
             let name = fileName
+            image = nil
+            missing = false
             guard VideoStore.exists(name) else {
                 missing = true
                 return

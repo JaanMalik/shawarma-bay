@@ -58,7 +58,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Backup")
                 } footer: {
-                    Text("Your data lives only on this iPhone. Export a backup now and then (save it to Files or AirDrop it to your Mac). Restoring adds missing sets and never deletes anything. Videos aren't in the backup file: copy them from the Files app under On My iPhone > LiftLog > Videos.")
+                    Text("Your data lives only on this iPhone. Export a backup now and then (save it to Files or AirDrop it to your Mac). Restoring adds missing sets and never deletes anything. The backup remembers which set has which video but doesn't contain the videos: copy those from the Files app under On My iPhone > LiftLog > Videos.")
                 }
 
                 Section("Stats") {
@@ -100,6 +100,7 @@ struct SettingsView: View {
             let data = try Data(contentsOf: url)
             let added = try Backup.restore(from: data, into: context, existing: exercises)
             message = "Restored \(added.sets) sets and \(added.exercises) new exercises."
+                + (added.videos > 0 ? " Re-linked \(added.videos) videos." : "")
         } catch {
             message = "Couldn't restore that file. \(error.localizedDescription)"
         }
