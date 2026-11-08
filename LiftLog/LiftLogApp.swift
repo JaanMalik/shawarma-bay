@@ -3,6 +3,11 @@ import SwiftData
 
 @main
 struct LiftLogApp: App {
+    init() {
+        // Before any screen looks for a video file.
+        VideoStore.migrateLegacyFolder()
+    }
+
     var body: some Scene {
         WindowGroup {
             ExerciseListView()

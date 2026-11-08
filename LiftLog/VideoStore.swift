@@ -125,6 +125,24 @@ enum VideoStore {
         }
     }
 
+    /// An earlier test build kept videos in Documents/SetVideos under the same kind of plain names.
+    /// Moves them into the Videos folder so their sets find them again, then removes the old folder
+    /// once it is empty. A file whose name is already taken is left where it is.
+    static func migrateLegacyFolder() {
+        let fm = FileManager.default
+        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let legacy = documents.appendingPathComponent("SetVideos", isDirectory: true)
+        guard let files = try? fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: nil) else { return }
+        for file in files {
+            let name = file.lastPathComponent
+            guard isSafeName(name), !fm.fileExists(atPath: url(for: name).path) else { continue }
+            try? fm.moveItem(at: file, to: url(for: name))
+        }
+        if let left = try? fm.contentsOfDirectory(atPath: legacy.path), left.isEmpty {
+            try? fm.removeItem(at: legacy)
+        }
+    }
+
     private static func removeFiles(named fileName: String) {
         try? FileManager.default.removeItem(at: url(for: fileName))
         try? FileManager.default.removeItem(at: posterURL(for: fileName))
