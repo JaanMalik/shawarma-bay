@@ -74,11 +74,12 @@ struct ExerciseListView: View {
                 presenting: pendingDelete
             ) { exercise in
                 Button("Delete exercise and all its sets", role: .destructive) {
+                    exercise.sets.forEach { VideoStore.delete($0.videoFileName) }
                     context.delete(exercise)
                     try? context.save()
                 }
             } message: { _ in
-                Text("This can't be undone. Archive it instead if you just want to hide it.")
+                Text("This can't be undone, and any set videos are deleted too. Archive it instead if you just want to hide it.")
             }
             .task { seedIfNeeded() }
         }

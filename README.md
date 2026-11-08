@@ -11,6 +11,13 @@ database. No account, no cloud, no ads.
 - Log a set (weight, reps, date, note) in a few taps. It pre-fills your last weight and reps and
   shows "to beat" numbers and whether the set will be a PR before you save.
 - Celebrates PRs with a trophy screen and a haptic tap.
+- Attach a video to any set, PR or not: pick the recording from Photos when you log or edit the
+  set. LiftLog keeps its own copy (in the app's Documents/SetVideos folder), shows a play button
+  on that set in the history, and deletes the copy when you delete the set or remove the video.
+  Videos aren't part of the JSON backup or CSV export.
+- Each exercise opens with a looping animation that matches its equipment: a barbell with one
+  45 lb plate per side (a 20 kg plate when the unit is kg), an EZ bar, a dumbbell curl, or a
+  machine/cable weight stack. It holds still when Reduce Motion is on.
 - Per lift: estimated 1RM, heaviest set, a chart of estimated 1RM over time, a rep-max table
   (1 to 12 reps) and full history with PR badges. Tap a set to edit it, swipe to delete.
 - Settings: lb or kg, Epley or Brzycki formula, how many reps count toward the estimate,

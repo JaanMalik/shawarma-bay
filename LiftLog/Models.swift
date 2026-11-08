@@ -72,6 +72,8 @@ final class LiftSet {
     var weight: Double = 0
     var reps: Int = 1
     var note: String = ""
+    /// File name of an attached video in Documents/SetVideos (see VideoStore), if any.
+    var videoFileName: String? = nil
     var exercise: Exercise?
 
     init(date: Date, weight: Double, reps: Int, note: String = "") {

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 /// Log a new set, or edit an existing one.
 struct LogSetView: View {
@@ -23,6 +24,15 @@ struct LogSetView: View {
     @State private var savedText = ""
     @State private var saveCount = 0
     @FocusState private var weightFocused: Bool
+
+    /// The video attached in this form (may not be saved yet).
+    @State private var videoName: String?
+    /// A video copied into the app that no saved set uses yet. Deleted if the form closes without saving.
+    @State private var unsavedVideo: String?
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var loadingVideo = false
+    @State private var videoError: String?
+    @State private var playing: PlayableVideo?
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
 
@@ -59,6 +69,9 @@ struct LogSetView: View {
         }
         .sensoryFeedback(.success, trigger: saveCount)
         .onAppear(perform: load)
+        .onDisappear { discardUnsavedVideo() }
+        .onChange(of: pickerItem) { _, item in importVideo(item) }
+        .sheet(item: $playing) { VideoPlayerSheet(video: $0) }
     }
 
     private var form: some View {
@@ -109,6 +122,8 @@ struct LogSetView: View {
                 TextField("Note (optional)", text: $note, axis: .vertical)
             }
 
+            videoSection
+
             if let draft {
                 Section("Preview") { preview(draft) }
             }
@@ -128,6 +143,78 @@ struct LogSetView: View {
                 Button("Done") { weightFocused = false }
             }
         }
+    }
+
+    private var videoSection: some View {
+        Section {
+            if loadingVideo {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Adding video…").foregroundStyle(.secondary)
+                }
+            } else if let videoName {
+                Button {
+                    playing = PlayableVideo(fileName: videoName)
+                } label: {
+                    VideoThumbnail(fileName: videoName)
+                        .frame(height: 180)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+                PhotosPicker(selection: $pickerItem, matching: .videos) {
+                    Label("Replace video", systemImage: "arrow.triangle.2.circlepath")
+                }
+                Button(role: .destructive) {
+                    removeVideo()
+                } label: {
+                    Label("Remove video", systemImage: "trash")
+                }
+            } else {
+                PhotosPicker(selection: $pickerItem, matching: .videos) {
+                    Label("Add a video of this set", systemImage: "video.badge.plus")
+                }
+            }
+            if let videoError {
+                Text(videoError).font(.caption).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Video")
+        } footer: {
+            Text("Optional. Pick a recording of this set from your Photos. LiftLog keeps its own copy.")
+        }
+    }
+
+    private func importVideo(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        loadingVideo = true
+        videoError = nil
+        Task {
+            defer {
+                loadingVideo = false
+                pickerItem = nil
+            }
+            do {
+                guard let picked = try await item.loadTransferable(type: PickedVideo.self) else {
+                    videoError = "Couldn't load that video."
+                    return
+                }
+                discardUnsavedVideo()
+                videoName = picked.fileName
+                unsavedVideo = picked.fileName
+            } catch {
+                videoError = "Couldn't load that video. If it's in iCloud, open it in Photos once to download it, then try again."
+            }
+        }
+    }
+
+    private func removeVideo() {
+        discardUnsavedVideo()
+        videoName = nil
+    }
+
+    private func discardUnsavedVideo() {
+        VideoStore.delete(unsavedVideo)
+        unsavedVideo = nil
     }
 
     @ViewBuilder
@@ -179,6 +266,7 @@ struct LogSetView: View {
             reps = editing.reps
             date = editing.date
             note = editing.note
+            videoName = editing.videoFileName
         } else if let last = exercise.sets.max(by: { $0.date < $1.date }) {
             weightText = unit.format(last.weight, showUnit: false)
             reps = last.reps
@@ -196,6 +284,11 @@ struct LogSetView: View {
             editing.reps = reps
             editing.date = date
             editing.note = trimmed
+            if editing.videoFileName != videoName {
+                VideoStore.delete(editing.videoFileName)
+                editing.videoFileName = videoName
+            }
+            unsavedVideo = nil
             try? context.save()
             dismiss()
             return
@@ -204,6 +297,8 @@ struct LogSetView: View {
         let prior = exercise.records
         let set = LiftSet(date: date, weight: pounds, reps: reps, note: trimmed)
         set.id = draftID
+        set.videoFileName = videoName
+        unsavedVideo = nil
         context.insert(set)
         exercise.sets.append(set)
         try? context.save()
@@ -219,6 +314,7 @@ struct LogSetView: View {
             draftID = UUID()
             date = Date()
             note = ""
+            videoName = nil
         }
     }
 }

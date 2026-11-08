@@ -13,6 +13,7 @@ struct ExerciseDetailView: View {
     @State private var showingLog = false
     @State private var editingSet: LiftSet?
     @State private var showingEditor = false
+    @State private var playing: PlayableVideo?
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
 
@@ -23,6 +24,12 @@ struct ExerciseDetailView: View {
         let timeline = calculator.estimateTimeline(records)
 
         List {
+            Section {
+                ExerciseAnimationView(equipment: exercise.equipment, unit: unit)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            }
+
             Section {
                 HStack(spacing: 12) {
                     StatCard(
@@ -113,6 +120,7 @@ struct ExerciseDetailView: View {
         .sheet(isPresented: $showingLog) { LogSetView(exercise: exercise) }
         .sheet(item: $editingSet) { set in LogSetView(exercise: exercise, editing: set) }
         .sheet(isPresented: $showingEditor) { ExerciseEditorView(exercise: exercise) }
+        .sheet(item: $playing) { VideoPlayerSheet(video: $0) }
     }
 
     @ViewBuilder
@@ -122,7 +130,9 @@ struct ExerciseDetailView: View {
         ForEach(sortedDays, id: \.self) { day in
             Section {
                 ForEach((days[day] ?? []).sorted { $0.date > $1.date }) { set in
-                    SetRow(set: set, unit: unit, estimate: calculator.estimate(set.record), prs: flags[set.id] ?? [])
+                    SetRow(set: set, unit: unit, estimate: calculator.estimate(set.record), prs: flags[set.id] ?? []) {
+                        if let name = set.videoFileName { playing = PlayableVideo(fileName: name) }
+                    }
                         .contentShape(Rectangle())
                         .onTapGesture { editingSet = set }
                         .swipeActions {
@@ -140,6 +150,7 @@ struct ExerciseDetailView: View {
     }
 
     private func delete(_ set: LiftSet) {
+        VideoStore.delete(set.videoFileName)
         exercise.sets.removeAll { $0.id == set.id }
         context.delete(set)
         try? context.save()
@@ -179,9 +190,20 @@ struct SetRow: View {
     let unit: WeightUnit
     let estimate: Double?
     let prs: [PRKind]
+    var onPlayVideo: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
+            if set.videoFileName != nil {
+                Button(action: onPlayVideo) {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Play video of this set")
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(unit.format(set.weight)) × \(set.reps)")
                     .font(.body.weight(.semibold))
