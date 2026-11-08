@@ -120,7 +120,10 @@ struct ExerciseListView: View {
         guard !handledLaunchArgument else { return }
         handledLaunchArgument = true
         guard let name = UserDefaults.standard.string(forKey: "LiftLogOpen") else { return }
-        if let match = exercises.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+        // Fetched directly, because on the very first launch the list hasn't caught up with the
+        // exercises that were just added.
+        let all = (try? context.fetch(FetchDescriptor<Exercise>())) ?? exercises
+        if let match = all.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             path = [match]
         }
     }
