@@ -1,5 +1,5 @@
-// Quick checks for the PR math. Run from the repo root on a Mac:
-//   swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
+// Quick checks for the PR math and the equipment pictures. Run from the repo root on a Mac:
+//   swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift LiftLog/ExerciseTypes.swift LiftLog/EquipmentRules.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
 import Foundation
 
 var failures = 0
@@ -67,6 +67,37 @@ check(flags[more.id]?.contains(.repMax(5)) == true, "230 x 5 flagged as 5RM")
 check(WeightUnit.kg.format(225) == "102.1 kg", "225 lb shows as 102.1 kg")
 check(WeightUnit.parse("102,5") == 102.5, "comma decimals parse")
 check(WeightUnit.plain(1000) == "1000", "no thousands separator")
+
+// Equipment pictures
+check(EquipmentRules.picture(for: .barbell) == .barbell, "barbell exercises show a barbell")
+check(EquipmentRules.picture(for: .ezBar) == .ezBar, "curl bar exercises show a curl bar")
+check(EquipmentRules.picture(for: .dumbbell) == .dumbbell, "dumbbell exercises show a dumbbell")
+check(EquipmentRules.picture(for: .machine) == .machine, "machine exercises show a machine")
+check(EquipmentRules.picture(for: .cable) == .machine, "cable exercises show the weight stack")
+check(EquipmentRules.picture(for: .bodyweight) == .figure, "bodyweight exercises show a lifter")
+
+let lbPlates = EquipmentRules.standardPlates(for: .lb)
+check(lbPlates.count == 1 && lbPlates[0].label == "45" && lbPlates[0].unitLabel == "lb", "pounds: one 45 lb plate per side")
+let kgPlates = EquipmentRules.standardPlates(for: .kg)
+check(kgPlates.count == 1 && kgPlates[0].label == "20" && kgPlates[0].unitLabel == "kg", "kilograms: one 20 kg plate per side")
+check(EquipmentRules.stackLabels(for: .lb).prefix(3) == ["10", "20", "30"], "lb weight stack counts by 10")
+check(EquipmentRules.stackLabels(for: .kg).prefix(3) == ["5", "10", "15"], "kg weight stack counts by 5")
+check(EquipmentRules.description(picture: .barbell, unit: .kg).contains("20 kg"), "VoiceOver says 20 kg in kilograms")
+
+let deadlift = EquipmentRules.motion(name: "Deadlift", category: .back, equipment: .barbell)
+check(deadlift.startsOnFloor && deadlift.travel > 0, "deadlift starts from the floor")
+let dbCurl = EquipmentRules.motion(name: "Single-Arm Dumbbell Curl", category: .arms, equipment: .dumbbell)
+check(dbCurl.tilt != 0 && dbCurl.travel > 0, "dumbbell curl tilts as it rises")
+let preacher = EquipmentRules.motion(name: "Preacher Curl", category: .arms, equipment: .ezBar)
+check(preacher.tilt != 0, "preacher curl tilts")
+let bench = EquipmentRules.motion(name: "Bench Press", category: .chest, equipment: .barbell)
+check(bench.tilt == 0 && bench.travel > 0 && !bench.startsOnFloor, "bench press goes straight up and down")
+let legPress = EquipmentRules.motion(name: "Leg Press", category: .legs, equipment: .machine)
+check(legPress.travel > 0 && legPress.tilt == 0, "machine stack moves straight up")
+for equipment in Equipment.allCases {
+    let m = EquipmentRules.motion(name: "Anything", category: .other, equipment: equipment)
+    check(m.secondsUp > 0 && m.secondsDown > 0 && m.travel <= 40, "\(equipment.rawValue) motion fits the card")
+}
 
 print(failures == 0 ? "\nAll checks passed." : "\n\(failures) check(s) failed.")
 exit(failures == 0 ? 0 : 1)

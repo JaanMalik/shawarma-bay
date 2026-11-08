@@ -58,12 +58,13 @@ struct SettingsView: View {
                 } header: {
                     Text("Backup")
                 } footer: {
-                    Text("Your data lives only on this iPhone. Export a backup now and then (save it to Files or AirDrop it to your Mac). Restoring adds missing sets and never deletes anything.")
+                    Text("Your data lives only on this iPhone. Export a backup now and then (save it to Files or AirDrop it to your Mac). Restoring adds missing sets and never deletes anything. Videos aren't in the backup file: copy them from the Files app under On My iPhone > LiftLog > Videos.")
                 }
 
                 Section("Stats") {
                     LabeledContent("Exercises", value: "\(exercises.count)")
                     LabeledContent("Sets logged", value: "\(exercises.reduce(0) { $0 + $1.sets.count })")
+                    LabeledContent("Videos", value: videoSummary)
                 }
             }
             .navigationTitle("Settings")
@@ -82,6 +83,13 @@ struct SettingsView: View {
                 Text(message ?? "")
             }
         }
+    }
+
+    private var videoSummary: String {
+        let names = exercises.flatMap { $0.sets.compactMap(\.videoFileName) }
+        guard !names.isEmpty else { return "None" }
+        let bytes = names.reduce(Int64(0)) { $0 + VideoStore.fileSize($1) }
+        return "\(names.count) · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))"
     }
 
     private func restore(_ result: Result<URL, Error>) {

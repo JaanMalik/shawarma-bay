@@ -13,8 +13,16 @@ database. No account, no cloud, no ads.
 - Celebrates PRs with a trophy screen and a haptic tap.
 - Per lift: estimated 1RM, heaviest set, a chart of estimated 1RM over time, a rep-max table
   (1 to 12 reps) and full history with PR badges. Tap a set to edit it, swipe to delete.
+- Videos: attach a clip from Photos to any set (PR or not) when you log or edit it. Sets with
+  a video show a thumbnail in the history; tap it to play or share. Clips are copied into the
+  app, so deleting them from Photos doesn't remove them.
+- Equipment picture: the top of each exercise shows an animated picture of its equipment doing
+  slow reps. Barbell lifts show a bar with a 45 lb plate on each side (a 20 kg plate when the
+  unit is kg), the preacher curl shows a curl bar, dumbbell lifts show a dumbbell, and machine
+  or cable lifts show a weight stack. It follows the Equipment you pick for the exercise, and
+  holds still when Reduce Motion is on.
 - Settings: lb or kg, Epley or Brzycki formula, how many reps count toward the estimate,
-  JSON backup and restore, CSV export.
+  JSON backup and restore, CSV export, and how much space videos use.
 
 ## How PRs are counted
 
@@ -27,6 +35,13 @@ database. No account, no cloud, no ads.
 - History badges show which PRs each set broke **at the time** it was done.
 
 Weights are stored in pounds and converted for display, so switching units never changes your data.
+
+## Where videos are kept
+
+Videos are stored in the app's own folder on the phone, never uploaded. You can see and copy
+them in the Files app under **On My iPhone > LiftLog > Videos**, or in Finder on your Mac with
+the phone plugged in. The JSON backup has your sets but not the video files themselves.
+Deleting a set, or an exercise, deletes its videos.
 
 ## Install on your iPhone (free Apple ID)
 
@@ -65,19 +80,22 @@ You need a Mac with Xcode. A paid developer account is not needed.
 LiftLog.xcodeproj         Xcode project (Xcode 16 or newer)
 LiftLog/                  App source. Xcode picks up any file added here automatically.
   LiftLogApp.swift        App entry and local database setup (SwiftData)
-  Models.swift            Exercise and LiftSet
+  Models.swift            Exercise and LiftSet (a set can have a video)
+  ExerciseTypes.swift     Muscle groups and equipment
+  EquipmentRules.swift    Which picture each exercise gets and how it moves (no UI code)
+  VideoStore.swift        Saving, naming and deleting set videos
   PRCalculator.swift      All PR math (no UI code)
   SeedData.swift          Starting exercises
   Units.swift             lb/kg and settings keys
   Backup.swift            JSON backup/restore and CSV export
   Views/                  Screens
-Checks/main.swift         Checks for the PR math
+Checks/main.swift         Checks for the PR math and equipment rules
 ```
 
 Run the PR math checks on a Mac:
 
 ```
-swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
+swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift LiftLog/ExerciseTypes.swift LiftLog/EquipmentRules.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
 ```
 
 Requires iOS 17 or newer.

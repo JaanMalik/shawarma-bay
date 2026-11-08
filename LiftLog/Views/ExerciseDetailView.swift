@@ -12,6 +12,7 @@ struct ExerciseDetailView: View {
 
     @State private var showingLog = false
     @State private var editingSet: LiftSet?
+    @State private var playingSet: LiftSet?
     @State private var showingEditor = false
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
@@ -23,6 +24,12 @@ struct ExerciseDetailView: View {
         let timeline = calculator.estimateTimeline(records)
 
         List {
+            Section {
+                EquipmentHeroView(name: exercise.name, category: exercise.category, equipment: exercise.equipment, unit: unit)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            }
+
             Section {
                 HStack(spacing: 12) {
                     StatCard(
@@ -112,6 +119,9 @@ struct ExerciseDetailView: View {
         }
         .sheet(isPresented: $showingLog) { LogSetView(exercise: exercise) }
         .sheet(item: $editingSet) { set in LogSetView(exercise: exercise, editing: set) }
+        .sheet(item: $playingSet) { set in
+            VideoPlayerSheet(fileName: set.videoFileName ?? "", title: "\(unit.format(set.weight)) × \(set.reps)")
+        }
         .sheet(isPresented: $showingEditor) { ExerciseEditorView(exercise: exercise) }
     }
 
@@ -122,16 +132,32 @@ struct ExerciseDetailView: View {
         ForEach(sortedDays, id: \.self) { day in
             Section {
                 ForEach((days[day] ?? []).sorted { $0.date > $1.date }) { set in
-                    SetRow(set: set, unit: unit, estimate: calculator.estimate(set.record), prs: flags[set.id] ?? [])
-                        .contentShape(Rectangle())
-                        .onTapGesture { editingSet = set }
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                delete(set)
+                    HStack(spacing: 12) {
+                        if let video = set.videoFileName {
+                            Button {
+                                playingSet = set
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                VideoThumbnail(fileName: video, cornerRadius: 8, badgeSize: 16)
+                                    .frame(width: 56, height: 56)
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Play video")
                         }
+                        Button {
+                            editingSet = set
+                        } label: {
+                            SetRow(set: set, unit: unit, estimate: calculator.estimate(set.record), prs: flags[set.id] ?? [])
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) {
+                            delete(set)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
             } header: {
                 Text(day == sortedDays.first ? "History · \(day.formatted(date: .complete, time: .omitted))" : day.formatted(date: .complete, time: .omitted))
@@ -140,6 +166,7 @@ struct ExerciseDetailView: View {
     }
 
     private func delete(_ set: LiftSet) {
+        VideoStore.delete(set.videoFileName)
         exercise.sets.removeAll { $0.id == set.id }
         context.delete(set)
         try? context.save()

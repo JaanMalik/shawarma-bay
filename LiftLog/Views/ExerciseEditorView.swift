@@ -8,6 +8,7 @@ struct ExerciseEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @Query private var all: [Exercise]
+    @AppStorage(SettingsKey.unit) private var unit: WeightUnit = .lb
 
     @State private var name = ""
     @State private var category: ExerciseCategory = .legs
@@ -32,6 +33,15 @@ struct ExerciseEditorView: View {
                     Picker("Equipment", selection: $equipment) {
                         ForEach(Equipment.allCases) { Text($0.rawValue).tag($0) }
                     }
+                }
+                Section {
+                    EquipmentHeroView(name: trimmedName.isEmpty ? "Exercise" : trimmedName, category: category, equipment: equipment, unit: unit)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                } header: {
+                    Text("Picture")
+                } footer: {
+                    Text("Shown at the top of the exercise. It follows the equipment you pick.")
                 }
                 Section {
                     TextField("e.g. per dumbbell, per arm, plates only", text: $weightNote)

@@ -1,7 +1,8 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 
-/// Log a new set, or edit an existing one.
+/// Log a new set, or edit an existing one. A video from Photos can be attached to any set.
 struct LogSetView: View {
     let exercise: Exercise
     var editing: LiftSet? = nil
@@ -24,6 +25,15 @@ struct LogSetView: View {
     @State private var saveCount = 0
     @FocusState private var weightFocused: Bool
 
+    // Video. A clip picked here is copied in under a temporary name and only becomes the set's
+    // video on Save, so Cancel never changes a saved video.
+    @State private var pendingVideo: String?
+    @State private var removeSavedVideo = false
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var importingVideo = false
+    @State private var videoError: String?
+    @State private var playingVideo: VideoRef?
+
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
 
     private var weightInPounds: Double? {
@@ -38,6 +48,13 @@ struct LogSetView: View {
     private var draft: SetRecord? {
         guard let pounds = weightInPounds else { return nil }
         return SetRecord(id: editing?.id ?? draftID, date: date, weight: pounds, reps: reps)
+    }
+
+    /// The video shown in the sheet right now: the newly picked one, or the set's saved one.
+    private var shownVideo: String? {
+        if let pendingVideo { return pendingVideo }
+        if removeSavedVideo { return nil }
+        return editing?.videoFileName
     }
 
     var body: some View {
@@ -59,6 +76,19 @@ struct LogSetView: View {
         }
         .sensoryFeedback(.success, trigger: saveCount)
         .onAppear(perform: load)
+        .onDisappear(perform: discardPendingVideo)
+        .onChange(of: pickerItem) { _, item in
+            guard let item else { return }
+            importVideo(item)
+        }
+        .sheet(item: $playingVideo) { video in
+            VideoPlayerSheet(fileName: video.fileName, title: exercise.name)
+        }
+        .alert("Video", isPresented: Binding(get: { videoError != nil }, set: { if !$0 { videoError = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(videoError ?? "")
+        }
     }
 
     private var form: some View {
@@ -109,6 +139,8 @@ struct LogSetView: View {
                 TextField("Note (optional)", text: $note, axis: .vertical)
             }
 
+            videoSection
+
             if let draft {
                 Section("Preview") { preview(draft) }
             }
@@ -121,7 +153,7 @@ struct LogSetView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { save() }
                     .bold()
-                    .disabled(draft == nil)
+                    .disabled(draft == nil || importingVideo)
             }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -129,6 +161,103 @@ struct LogSetView: View {
             }
         }
     }
+
+    // MARK: Video
+
+    private var videoSection: some View {
+        Section {
+            if importingVideo {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    Text("Adding video…")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let shownVideo {
+                Button {
+                    playingVideo = VideoRef(fileName: shownVideo)
+                } label: {
+                    VideoThumbnail(fileName: shownVideo, cornerRadius: 12, badgeSize: 30)
+                        .frame(height: 160)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+                .accessibilityLabel("Play video")
+
+                PhotosPicker(selection: $pickerItem, matching: .videos) {
+                    Label("Replace video", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Button(role: .destructive) {
+                    removeVideo()
+                } label: {
+                    Label("Remove video", systemImage: "trash")
+                }
+            } else {
+                PhotosPicker(selection: $pickerItem, matching: .videos) {
+                    Label("Add a video of this set", systemImage: "video.badge.plus")
+                }
+            }
+        } header: {
+            Text("Video")
+        } footer: {
+            Text("Pick a clip you recorded. It's copied into the app, so it stays even if you later delete it from Photos. Videos aren't included in the backup file.")
+        }
+    }
+
+    private func importVideo(_ item: PhotosPickerItem) {
+        importingVideo = true
+        videoError = nil
+        Task {
+            do {
+                guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                    throw CocoaError(.fileReadUnknown)
+                }
+                await VideoStore.makePoster(for: movie.fileName)
+                if let old = pendingVideo {
+                    VideoStore.delete(old)
+                }
+                pendingVideo = movie.fileName
+                removeSavedVideo = false
+            } catch {
+                videoError = "Couldn't add that video. \(error.localizedDescription)"
+            }
+            importingVideo = false
+            pickerItem = nil
+        }
+    }
+
+    private func removeVideo() {
+        if let pendingVideo {
+            VideoStore.delete(pendingVideo)
+            self.pendingVideo = nil
+        } else {
+            removeSavedVideo = true
+        }
+    }
+
+    /// Cancel, swipe-down, or Done after a PR: anything picked but never saved is removed.
+    private func discardPendingVideo() {
+        if let pendingVideo {
+            VideoStore.delete(pendingVideo)
+            self.pendingVideo = nil
+        }
+    }
+
+    /// Moves the sheet's video choice onto the set being saved.
+    private func applyVideo(to set: LiftSet) {
+        if let pendingVideo {
+            VideoStore.delete(set.videoFileName)
+            set.videoFileName = VideoStore.adopt(pendingVideo, forSetID: set.id)
+            self.pendingVideo = nil
+        } else if removeSavedVideo {
+            VideoStore.delete(set.videoFileName)
+            set.videoFileName = nil
+        }
+        removeSavedVideo = false
+    }
+
+    // MARK: Preview
 
     @ViewBuilder
     private func preview(_ draft: SetRecord) -> some View {
@@ -196,6 +325,7 @@ struct LogSetView: View {
             editing.reps = reps
             editing.date = date
             editing.note = trimmed
+            applyVideo(to: editing)
             try? context.save()
             dismiss()
             return
@@ -206,6 +336,7 @@ struct LogSetView: View {
         set.id = draftID
         context.insert(set)
         exercise.sets.append(set)
+        applyVideo(to: set)
         try? context.save()
 
         let kinds = calculator.newRecords(for: set.record, comparedTo: prior)
@@ -221,6 +352,12 @@ struct LogSetView: View {
             note = ""
         }
     }
+}
+
+/// Identifies a video file for `.sheet(item:)`.
+struct VideoRef: Identifiable {
+    let fileName: String
+    var id: String { fileName }
 }
 
 struct CelebrationView: View {

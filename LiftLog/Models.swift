@@ -1,30 +1,6 @@
 import Foundation
 import SwiftData
 
-enum ExerciseCategory: String, CaseIterable, Identifiable, Codable {
-    case legs = "Legs"
-    case chest = "Chest"
-    case back = "Back"
-    case shoulders = "Shoulders"
-    case arms = "Arms"
-    case core = "Core"
-    case other = "Other"
-
-    var id: String { rawValue }
-}
-
-enum Equipment: String, CaseIterable, Identifiable, Codable {
-    case barbell = "Barbell"
-    case dumbbell = "Dumbbell"
-    case ezBar = "EZ / Preacher Bar"
-    case machine = "Machine"
-    case cable = "Cable"
-    case bodyweight = "Bodyweight"
-    case other = "Other"
-
-    var id: String { rawValue }
-}
-
 @Model
 final class Exercise {
     var id: UUID = UUID()
@@ -72,6 +48,9 @@ final class LiftSet {
     var weight: Double = 0
     var reps: Int = 1
     var note: String = ""
+    /// File name of the set's video inside the app's Videos folder (see VideoStore), if one was added.
+    /// Optional with a nil default so stores from the first version open without a migration step.
+    var videoFileName: String? = nil
     var exercise: Exercise?
 
     init(date: Date, weight: Double, reps: Int, note: String = "") {
@@ -80,7 +59,9 @@ final class LiftSet {
         self.weight = weight
         self.reps = reps
         self.note = note
+        self.videoFileName = nil
     }
 
     var record: SetRecord { SetRecord(id: id, date: date, weight: weight, reps: reps) }
+    var hasVideo: Bool { videoFileName != nil }
 }

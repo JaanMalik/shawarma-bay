@@ -27,6 +27,9 @@ struct SetBackup: Codable {
     var weightLb: Double
     var reps: Int
     var note: String
+    /// Name of the set's video in the app's Videos folder. The video itself isn't in the backup.
+    /// Optional, so backups from the first version still restore.
+    var videoFileName: String?
 }
 
 struct BackupExport: Transferable {
@@ -61,7 +64,7 @@ enum Backup {
                     sortOrder: ex.sortOrder,
                     isArchived: ex.isArchived,
                     sets: ex.sets.sorted { $0.date < $1.date }.map {
-                        SetBackup(id: $0.id, date: $0.date, weightLb: $0.weight, reps: $0.reps, note: $0.note)
+                        SetBackup(id: $0.id, date: $0.date, weightLb: $0.weight, reps: $0.reps, note: $0.note, videoFileName: $0.videoFileName)
                     }
                 )
             }
@@ -74,7 +77,7 @@ enum Backup {
 
     static func csv(from exercises: [Exercise], unit: WeightUnit) -> String {
         let formatter = ISO8601DateFormatter()
-        var lines = ["date,exercise,weight_\(unit.rawValue),reps,note"]
+        var lines = ["date,exercise,weight_\(unit.rawValue),reps,note,has_video"]
         for ex in exercises {
             for s in ex.sets.sorted(by: { $0.date < $1.date }) {
                 lines.append([
@@ -83,6 +86,7 @@ enum Backup {
                     unit.format(s.weight, showUnit: false),
                     String(s.reps),
                     quote(s.note),
+                    s.videoFileName == nil ? "no" : "yes",
                 ].joined(separator: ","))
             }
         }
@@ -129,6 +133,10 @@ enum Backup {
             for s in item.sets where !seenSetIDs.contains(s.id) {
                 let set = LiftSet(date: s.date, weight: s.weightLb, reps: s.reps, note: s.note)
                 set.id = s.id
+                // Re-link the video only if its file is still on this phone.
+                if VideoStore.exists(s.videoFileName) {
+                    set.videoFileName = s.videoFileName
+                }
                 context.insert(set)
                 target.sets.append(set)
                 seenSetIDs.insert(s.id)
