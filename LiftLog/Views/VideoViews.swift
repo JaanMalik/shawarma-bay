@@ -5,6 +5,9 @@ import AVFoundation
 /// Poster frame of a stored video, loaded off the main thread. Makes the poster if it is missing.
 struct PosterImage: View {
     let fileName: String
+    /// Size of the play badge drawn over a loaded poster. nil draws none. A missing or loading
+    /// clip shows its own symbol instead, so it never looks playable.
+    var playBadgeSize: CGFloat? = nil
 
     @State private var image: UIImage?
     @State private var missing = false
@@ -21,6 +24,14 @@ struct PosterImage: View {
                 } else {
                     Image(systemName: missing ? "video.slash" : "video.fill")
                         .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .overlay {
+                if image != nil, let playBadgeSize {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: playBadgeSize, weight: .bold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.5), radius: 4)
                 }
             }
             .clipped()
@@ -43,20 +54,14 @@ struct PosterImage: View {
     }
 }
 
-/// A tappable thumbnail with a play badge.
+/// A tappable thumbnail with a play badge once the poster is showing.
 struct VideoThumbnail: View {
     let fileName: String
     var cornerRadius: CGFloat = 10
     var badgeSize: CGFloat = 22
 
     var body: some View {
-        PosterImage(fileName: fileName)
-            .overlay {
-                Image(systemName: "play.fill")
-                    .font(.system(size: badgeSize, weight: .bold))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.5), radius: 4)
-            }
+        PosterImage(fileName: fileName, playBadgeSize: badgeSize)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
@@ -105,6 +110,8 @@ struct VideoPlayerSheet: View {
                 }
             }
         }
+        // A player is always dark, so its title and the "Video missing" text stay readable in light mode.
+        .preferredColorScheme(.dark)
         .onAppear {
             guard VideoStore.exists(fileName) else { return }
             // Play sound even with the mute switch on, like a video app.

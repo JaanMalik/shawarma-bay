@@ -98,7 +98,8 @@ private struct BarbellScene: View {
                 Capsule()
                     .fill(Color.secondary.opacity(0.25))
                     .frame(height: 3)
-                    .offset(y: CGFloat(motion.travel) / 2 + BarbellView.plateHeight / 2 + 5)
+                    // The line's top edge meets the plates at the bottom of the rep.
+                    .offset(y: CGFloat(motion.travel) / 2 + BarbellView.plateHeight / 2 + 1.5)
             }
             BarbellView(plates: plates, wavy: wavy)
                 // Centre the rep's travel in the card.
@@ -145,7 +146,8 @@ struct BarbellView: View {
     private var shaft: some View {
         if wavy {
             EZShaft()
-                .stroke(barColor, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                // Flat ends so the bar stops flush at both collars.
+                .stroke(barColor, style: StrokeStyle(lineWidth: 9, lineCap: .butt, lineJoin: .round))
                 .frame(height: 34)
         } else {
             Capsule()
