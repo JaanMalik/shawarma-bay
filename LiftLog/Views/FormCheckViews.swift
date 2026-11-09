@@ -91,7 +91,7 @@ final class FormCheckRunner {
             // leave gaps that look like missed reps. Better to stop than measure from those.
             if wentToBackground { throw FormCheckFailure(Self.backgroundMessage) }
 
-            let measurements = FormAnalyzer.measure(track: track, pattern: pattern)
+            let measurements = FormAnalyzer.measure(track: track, pattern: pattern, loggedReps: info.reps)
             let frames = FormAnalyzer.keyFrames(track: track, measurements: measurements)
             var check = FormCheck(videoFileName: videoFileName, checkedAt: Date(), aspect: track.aspect, duration: track.duration, frames: frames, measurements: measurements)
 

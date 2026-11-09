@@ -125,6 +125,9 @@ enum LifterTracker {
         var y: Double
         /// The box's longer side, about the person's height, or their length when lying down.
         var size: Double
+        /// Neck to hips, in frame heights, when seen. Unlike the box, it doesn't shrink when the
+        /// person lies on a bench, sits in a machine or crouches.
+        var torso: Double?
 
         init?(_ joints: [String: JointPoint], aspect: Double) {
             let seen = joints.values.filter { $0.confidence >= PoseSample.minimumConfidence }
@@ -135,6 +138,13 @@ enum LifterTracker {
             y = (minY + maxY) / 2
             size = max((maxX - minX) * aspect, maxY - minY)
             guard size > 0 else { return nil }
+            let sample = PoseSample(time: 0, joints: joints)
+            if let neck = sample.point(.neck), let root = sample.point(.root) {
+                torso = FormGeometry.distance(neck, root, aspect: aspect)
+            } else if let shoulder = sample.point(.leftShoulder) ?? sample.point(.rightShoulder),
+                      let hip = sample.point(.leftHip) ?? sample.point(.rightHip) {
+                torso = FormGeometry.distance(shoulder, hip, aspect: aspect)
+            }
         }
     }
 
@@ -144,6 +154,7 @@ enum LifterTracker {
         /// Frames in a row this person wasn't matched in.
         var misses = 0
         var sizes: [Double]
+        var torsos: [Double] = []
 
         /// How big this person usually looks, which stays put while they crouch or bend over.
         var usualSize: Double { RepFinder.percentile(sizes, 0.5) }
@@ -151,8 +162,19 @@ enum LifterTracker {
         /// How far `box` is from where this trail's person was last seen, when it can be them in
         /// this frame: its middle within about half a torso of there, and not much bigger or
         /// smaller. Both allow more for each frame in a row they were missed, the distance up to
-        /// about one torso. nil when it can't be them.
-        func distance(to box: Box) -> Double? {
+        /// about one torso. nil when it can't be them. Both boxes are drawn around only the joints
+        /// seen in both frames, when there are 4 or more, so a joint the phone missed in one frame
+        /// (both ankles, say) doesn't make the same person look like someone smaller.
+        func distance(to joints: [String: JointPoint], box: Box, aspect: Double) -> Double? {
+            var last = self.last, box = box
+            let lastJoints = samples[samples.count - 1].joints
+            func seen(_ j: [String: JointPoint]) -> Set<String> { Set(j.filter { $0.value.confidence >= PoseSample.minimumConfidence }.keys) }
+            let shared = seen(lastJoints).intersection(seen(joints))
+            if let a = Box(lastJoints.filter { shared.contains($0.key) }, aspect: aspect),
+               let b = Box(joints.filter { shared.contains($0.key) }, aspect: aspect) {
+                last = a
+                box = b
+            }
             let reach = max(last.size, usualSize) * min(0.2 + 0.05 * Double(misses), 0.35)
             let d = ((box.x - last.x) * (box.x - last.x) + (box.y - last.y) * (box.y - last.y)).squareRoot()
             let change = min(1.5 + 0.1 * Double(misses), 2.5)
@@ -163,6 +185,11 @@ enum LifterTracker {
 
         /// How big this person looks standing tall, or lying at full length.
         var fullSize: Double { RepFinder.percentile(sizes, 0.9) }
+
+        /// How big this person would look standing tall: at least 2.8 torso lengths, about
+        /// nose to ankles. Someone lying on a bench, sitting in a machine or at a preacher pad
+        /// then counts as big as someone standing beside them at the same distance.
+        var bodySize: Double { max(fullSize, 2.8 * RepFinder.percentile(torsos, 0.5)) }
 
         /// How far this person's joints go up and down, as a share of their full size, up to 1.
         /// The lifter's reps show up here, while someone standing by or walking past barely moves
@@ -175,11 +202,11 @@ enum LifterTracker {
                 }
             }
             let ranges = heights.values.filter { $0.count >= 8 }.map { RepFinder.percentile($0, 0.9) - RepFinder.percentile($0, 0.1) }
-            guard let most = ranges.max(), fullSize > 0 else { return 0 }
-            return min(most / fullSize, 1)
+            guard let most = ranges.max(), bodySize > 0 else { return 0 }
+            return min(most / bodySize, 1)
         }
 
-        var score: Double { Double(samples.count) * fullSize * (1 + motion) }
+        var score: Double { Double(samples.count) * bodySize * (1 + motion) }
     }
 
     /// The lifter's pose in each frame they were found in, in time order.
@@ -191,7 +218,7 @@ enum LifterTracker {
             var pairs: [(distance: Double, trail: Int, person: Int)] = []
             for (t, trail) in trails.enumerated() {
                 for (p, person) in people.enumerated() {
-                    if let d = trail.distance(to: person.box) { pairs.append((d, t, p)) }
+                    if let d = trail.distance(to: person.joints, box: person.box, aspect: aspect) { pairs.append((d, t, p)) }
                 }
             }
             pairs.sort { $0.distance < $1.distance }
@@ -204,12 +231,14 @@ enum LifterTracker {
                 trails[pair.trail].last = person.box
                 trails[pair.trail].misses = 0
                 trails[pair.trail].sizes.append(person.box.size)
+                if let torso = person.box.torso { trails[pair.trail].torsos.append(torso) }
             }
             for t in trails.indices where !matchedTrails.contains(t) {
                 trails[t].misses += 1
             }
             for (p, person) in people.enumerated() where !matchedPeople.contains(p) {
-                trails.append(Trail(samples: [PoseSample(time: frame.time, joints: person.joints)], last: person.box, sizes: [person.box.size]))
+                trails.append(Trail(samples: [PoseSample(time: frame.time, joints: person.joints)], last: person.box, sizes: [person.box.size],
+                                    torsos: person.box.torso.map { [$0] } ?? []))
             }
         }
         let scores = trails.map(\.score)
@@ -250,6 +279,8 @@ enum RepSignal: String, Codable, CaseIterable {
 enum LiftPattern: String, Codable, CaseIterable {
     case squat
     case hinge
+    /// A hinge that starts and ends standing tall, such as an RDL or a good morning.
+    case hingeFromTop
     case benchPress
     case overheadPress
     case row
@@ -265,7 +296,8 @@ enum LiftPattern: String, Codable, CaseIterable {
         if has("leg press") { return .legPress }
         if has("calf") { return .calfRaise }
         if has("leg curl", "hamstring curl", "leg extension") { return .other }
-        if has("deadlift", "rdl", "romanian", "good morning", "rack pull", "back extension", "hyperextension") { return .hinge }
+        if has("rdl", "romanian", "good morning", "back extension", "hyperextension") { return .hingeFromTop }
+        if has("deadlift", "rack pull") { return .hinge }
         if has("squat", "lunge") { return .squat }
         if has("military", "overhead", "ohp", "shoulder press", "push press", "arnold") { return .overheadPress }
         if has("bench", "incline", "decline", "chest press", "floor press") { return .benchPress }
@@ -285,7 +317,7 @@ enum LiftPattern: String, Codable, CaseIterable {
     var signal: RepSignal {
         switch self {
         case .squat, .calfRaise, .other: return .hipHeight
-        case .hinge, .benchPress, .overheadPress, .row: return .wristHeight
+        case .hinge, .hingeFromTop, .benchPress, .overheadPress, .row: return .wristHeight
         case .curl, .tricepsExtension: return .elbowAngle
         case .legPress: return .kneeAngle
         }
@@ -296,14 +328,14 @@ enum LiftPattern: String, Codable, CaseIterable {
     var countsAtHigh: Bool {
         switch self {
         case .hinge, .overheadPress, .row, .calfRaise: return true
-        case .squat, .benchPress, .curl, .tricepsExtension, .legPress, .other: return false
+        case .squat, .hingeFromTop, .benchPress, .curl, .tricepsExtension, .legPress, .other: return false
         }
     }
 
     /// What the counted point of a rep is called.
     var turnName: String {
         switch self {
-        case .squat, .legPress: return "bottom"
+        case .squat, .legPress, .hingeFromTop: return "bottom"
         case .benchPress: return "bar at chest"
         case .hinge, .overheadPress: return "lockout"
         case .row: return "top of pull"
@@ -317,7 +349,7 @@ enum LiftPattern: String, Codable, CaseIterable {
     /// Whether the first half of a rep (start to the counted point) is the lowering half.
     var lowersFirst: Bool {
         switch self {
-        case .squat, .benchPress, .tricepsExtension, .legPress, .other: return true
+        case .squat, .hingeFromTop, .benchPress, .tricepsExtension, .legPress, .other: return true
         case .hinge, .overheadPress, .row, .curl, .calfRaise: return false
         }
     }
@@ -521,6 +553,23 @@ enum RepFinder {
         return result
     }
 
+    /// The rep that ends the clip at its counted point, never coming back from it: from the turn
+    /// before to the first moment it is within 5% of the swing from the end. nil when the clip
+    /// doesn't end that way, or that turn stops short of `usual`, the other reps' turn level.
+    static func finalTurn(_ v: [Double], countAtHigh: Bool, threshold: Double, usual: Double?) -> RepSpan? {
+        let t = turns(v, threshold: threshold)
+        guard t.count >= 2, let last = t.last, !last.confirmed, last.isHigh == countAtHigh else { return nil }
+        if let usual, abs(v[last.index] - usual) > threshold / 2 { return nil }
+        let start = t[t.count - 2].index
+        let swing = abs(v[last.index] - v[start])
+        // The signal hardly changes in the last part of the way up, so the turn is the first moment
+        // it reaches the level it then holds to the end of the clip.
+        let near = (start...last.index).first { abs(v[$0] - v[last.index]) <= swing * 0.05 } ?? last.index
+        let held = percentile(Array(v[near...]), 0.5)
+        let turn = (near...last.index).first { countAtHigh ? v[$0] >= held : v[$0] <= held } ?? last.index
+        return tighten(RepSpan(start: start, turn: turn, end: turn), v)
+    }
+
     /// Moves a rep's start up to the moment it really gets going, and its end back to the moment it
     /// settles, so a pause or a noisy wobble before or after the rep isn't counted as part of it.
     /// That is the last moment before the turn, and the first after it, still within `band` of the
@@ -618,7 +667,7 @@ enum RepFinder {
 enum FormAnalyzer {
     /// Finds the reps in a tracked video and measures each one. nil when the lifter wasn't found
     /// in enough frames, or nothing moved enough to count.
-    static func measure(track: PoseTrack, pattern: LiftPattern) -> FormMeasurements? {
+    static func measure(track: PoseTrack, pattern: LiftPattern, loggedReps: Int? = nil) -> FormMeasurements? {
         let samples = track.samples
         guard samples.count >= 6 else { return nil }
         let torso = torsoLength(track)
@@ -654,6 +703,14 @@ enum FormAnalyzer {
             spans = RepFinder.merge(spans, chosen.values, times: times, countAtHigh: pattern.countsAtHigh)
             spans = RepFinder.trimEdges(spans, chosen.values, times: times, lowersFirst: pattern.lowersFirst)
             spans = dropOddEnds(spans, indices: chosen.indices, track: track, pattern: pattern, side: side, torso: torso, camera: camera)
+            // A deadlift let go at lockout never comes back down, so its lockout is never
+            // confirmed. Standing up after setting the bar down looks just the same, so the
+            // final lockout only counts when it is the one rep this set is short of the log.
+            if pattern == .hinge, let loggedReps, spans.count == loggedReps - 1,
+               let final = RepFinder.finalTurn(chosen.values, countAtHigh: true, threshold: chosen.range * 0.35,
+                                               usual: spans.isEmpty ? nil : RepFinder.percentile(spans.map { chosen.values[$0.turn] }, 0.5)) {
+                spans.append(final)
+            }
         }
 
         let reps = spans.enumerated().map { k, span in
@@ -671,20 +728,22 @@ enum FormAnalyzer {
 
     /// Drops a first or last "rep" that doesn't look like the reps in between, which is usually
     /// the setup or the finish: picking the bar up off the floor before rows, getting up after leg
-    /// presses or bench, or lifting the hands off the lap onto the preacher pad. Only with at least
-    /// three reps, and only from the ends. A rep is dropped when, compared with the middle of the
-    /// others, the torso lean at its turn differs by over 35°, the working joint's angle there by
-    /// over 50°, the hips travel over 0.6 torso lengths further from its start to its end, or, on
-    /// curls and extensions, the upper arm starts over 25° away. Angles mean nothing from the
-    /// front or back, so only the hips' travel counts there.
+    /// presses or bench, or lifting the hands off the lap onto the preacher pad. Only from the
+    /// ends. With three or more, an end is dropped when, compared with the reps between the ends,
+    /// the torso lean at its turn differs by over 35°, the working joint's angle there by over 50°,
+    /// the hips travel over 0.6 torso lengths further from its start to its end, or, on curls and
+    /// extensions, the upper arm starts over 25° away. With one or two there is nothing in between
+    /// to compare with, so a span is dropped when the torso ends it over 35° from where it started
+    /// it (sitting or standing up), and of two unlike curl spans, the one that lifts the arms onto
+    /// the pad goes. Angles mean nothing from the front or back, so only the hips' travel counts
+    /// there.
     private static func dropOddEnds(_ spans: [RepSpan], indices: [Int], track: PoseTrack, pattern: LiftPattern, side: BodySide, torso: Double, camera: CameraAngle) -> [RepSpan] {
-        guard spans.count >= 3 else { return spans }
         let samples = track.samples, aspect = track.aspect
         let anglesCount = camera != .front
         let usesArms: Bool
         switch pattern {
         case .benchPress, .overheadPress, .row, .curl, .tricepsExtension: usesArms = true
-        case .squat, .hinge, .legPress, .calfRaise, .other: usesArms = false
+        case .squat, .hinge, .hingeFromTop, .legPress, .calfRaise, .other: usesArms = false
         }
         let armMatters = pattern == .curl || pattern == .tricepsExtension
 
@@ -714,13 +773,48 @@ enum FormAnalyzer {
             if let arm = mine.arm, let reference = arms.first,
                let usual = middle(arms.map { FormGeometry.unwrap($0, around: reference) }),
                abs(FormGeometry.unwrap(arm, around: usual) - usual) > 25 { return true }
-            if let travel = mine.travel, travel - (middle(theirs.compactMap(\.travel)) ?? 0) > 0.6 { return true }
+            if let travel = mine.travel, let usual = middle(theirs.compactMap(\.travel)), travel - usual > 0.6 { return true }
             return false
         }
 
+        // With one or two spans there are no reps in between to compare with. A rep ends in the
+        // posture it started in, which sitting up, standing up or getting off the sled doesn't.
+        func shiftsLean(_ span: RepSpan) -> Bool {
+            guard anglesCount else { return false }
+            let leans = (span.start...span.end).compactMap { torsoLean(samples[indices[$0]], side: side, aspect: aspect) }
+            guard let first = leans.first, let last = leans.last else { return false }
+            return abs(first - last) > 35
+        }
+        // Lifting the arms from the lap onto the pad moves the upper arm on the way to the turn. So
+        // does a swinging cheat curl, so this only picks which of two unlike spans is the setup.
+        func armMoves(_ span: RepSpan) -> Bool {
+            guard let s0 = samples[indices[span.start]].point(side.shoulder), let e0 = samples[indices[span.start]].point(side.elbow),
+                  let s1 = samples[indices[span.turn]].point(side.shoulder), let e1 = samples[indices[span.turn]].point(side.elbow) else { return false }
+            let a = FormGeometry.upperArm(shoulder: s0, elbow: e0, aspect: aspect)
+            let b = FormGeometry.upperArm(shoulder: s1, elbow: e1, aspect: aspect)
+            return abs(FormGeometry.unwrap(a, around: b) - b) > 25
+        }
+        if spans.count < 3 {
+            let kept = spans.filter { !shiftsLean($0) }
+            guard kept.count == 2, anglesCount, armMatters,
+                  odd(kept[0], among: [kept[1]]) || odd(kept[1], among: [kept[0]]) else { return kept }
+            let moves = kept.map(armMoves)
+            return moves[0] == moves[1] ? kept : [moves[0] ? kept[1] : kept[0]]
+        }
+
+        // Each end is judged against the spans between the ends, and also against the other end
+        // when that one looks like a rep, so a setup at one end can't pull the middle off and get
+        // a real rep at the other end dropped. Both ends are judged before either is removed.
         var result = spans
-        while result.count >= 3, odd(result[0], among: Array(result.dropFirst())) { result.removeFirst() }
-        while result.count >= 3, odd(result[result.count - 1], among: Array(result.dropLast())) { result.removeLast() }
+        while result.count >= 3 {
+            let first = result[0], last = result[result.count - 1], inner = Array(result[1..<(result.count - 1)])
+            let firstOdd = odd(first, among: inner), lastOdd = odd(last, among: inner)
+            let dropFirst = firstOdd && (lastOdd || odd(first, among: inner + [last]))
+            let dropLast = lastOdd && (firstOdd || odd(last, among: [first] + inner))
+            guard dropFirst || dropLast else { break }
+            if dropLast { result.removeLast() }
+            if dropFirst { result.removeFirst() }
+        }
         return result
     }
 
@@ -996,7 +1090,7 @@ enum FormReport {
     /// One rep in words. Joint angles, depth, lean and drift are only measured from a side view:
     /// from the front or back the line gives just the turn and the tempo (and a calf raise's rise,
     /// which is up and down), and from an angle, or when the view is unclear, the numbers are
-    /// marked as rough.
+    /// marked as rough. Squat depth is left out from an angle.
     static func repLine(_ r: RepMeasure, pattern: LiftPattern, camera: CameraAngle = .side) -> String {
         var parts = ["Rep \(r.number): \(pattern.turnName) at \(seconds(r.turnTime))"]
         let rough = camera != .side
@@ -1008,7 +1102,11 @@ enum FormReport {
             switch pattern {
             case .squat:
                 if let k = r.kneeAtTurn { parts.append("knees \(deg(k))") }
-                if let d = r.hipBelowKnee { parts.append(depthText(d, rough: rough)) }
+                // From an angle the nearer of hip and knee sits lower in the picture when the
+                // phone is above them (higher when it's below), by more than a squat's margin
+                // either side of parallel, so even which one is lower can come out backwards.
+                // Depth is left to the frames there.
+                if let d = r.hipBelowKnee, camera != .angled { parts.append(depthText(d, rough: rough)) }
                 if let l = r.leanAtTurn { parts.append("torso lean \(deg(l))") }
             case .hinge:
                 if let h = r.hipAtTurn { parts.append("hips \(deg(h)) at lockout") }
@@ -1016,6 +1114,10 @@ enum FormReport {
                 if let c = r.earlyLeanChange {
                     parts.append(c > 5 ? "hips rose before the chest early in the pull (torso tipped \(deg(c)) further)" : "chest and hips rose together")
                 }
+                if let b = r.barDrift { parts.append("hands drifted \(pct(b)) of torso length" + (rough ? "" : " front to back")) }
+            case .hingeFromTop:
+                if let h = r.hipAtTurn { parts.append("hips \(deg(h)) at the bottom") }
+                if let l = r.leanAtTurn { parts.append("torso lean \(deg(l)) at the bottom") }
                 if let b = r.barDrift { parts.append("hands drifted \(pct(b)) of torso length" + (rough ? "" : " front to back")) }
             case .benchPress:
                 if let e = r.elbowAtTurn { parts.append("elbows \(deg(e)) at the bottom") }
@@ -1056,8 +1158,8 @@ enum FormReport {
         return parts.joined(separator: " · ")
     }
 
-    /// From an angle the hips' height against the knees still shows which is lower, but the
-    /// thigh looks shorter than it is, so only the direction is given.
+    /// When the view couldn't be told (usually a side view whose far shoulder wasn't found), the
+    /// thigh may look shorter than it is, so only the direction is given. Never used from an angle.
     static func depthText(_ d: Double, rough: Bool = false) -> String {
         if rough {
             if d > 0.05 { return "hips look below the knees" }

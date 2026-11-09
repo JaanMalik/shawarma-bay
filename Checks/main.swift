@@ -129,7 +129,7 @@ func jitter(_ amount: Double) -> Double {
 }
 func pose(_ time: Double, _ joints: [BodyJoint: (Double, Double)], wobble: Double = 0.003) -> PoseSample {
     var points: [String: JointPoint] = [:]
-    for (joint, xy) in joints {
+    for (joint, xy) in joints.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
         points[joint.rawValue] = JointPoint(x: xy.0 + jitter(wobble), y: xy.1 + jitter(wobble), confidence: 0.9)
     }
     return PoseSample(time: time, joints: points)
@@ -191,7 +191,7 @@ let roughTrack = makeTrack(duration: 18) { t -> PoseSample? in
     frameNumber += 1
     guard frameNumber % 4 != 0 else { return nil }
     var sample = squatPose(t, depth: repWave(t, lead: 1.5, reps: 5, period: 3))
-    for (name, point) in sample.joints {
+    for (name, point) in sample.joints.sorted(by: { $0.key < $1.key }) {
         sample.joints[name] = JointPoint(x: point.x + jitter(0.008), y: point.y + jitter(0.008), confidence: frameNumber % 7 == 0 ? 0.1 : 0.8)
     }
     return sample
@@ -434,8 +434,15 @@ if let rep = squat?.reps.first {
     check(frontLines.contains { $0.hasPrefix("Filmed from the front or back") } && frontLines.last.map { !$0.contains("°") && !$0.contains("parallel") } == true,
           "from the front, rep lines give no angles or depth: \(frontLines.last ?? "")")
     let angledLine = FormReport.repLine(rep, pattern: .squat, camera: .angled)
-    check(angledLine.contains("knees about ") && angledLine.contains("hips look below the knees") && !angledLine.contains("parallel"),
-          "from an angle, rep lines mark the numbers as rough: \(angledLine)")
+    check(angledLine.contains("knees about ") && !angledLine.contains("hips") && !angledLine.contains("parallel"),
+          "from an angle, rep lines mark the numbers as rough and leave depth out: \(angledLine)")
+    let unclearLine = FormReport.repLine(rep, pattern: .squat, camera: .unknown)
+    check(unclearLine.contains("hips look below the knees") && !unclearLine.contains("parallel"),
+          "when the view couldn't be told, only depth's direction is given: \(unclearLine)")
+    var highFromAngle = rep
+    highFromAngle.hipBelowKnee = -0.17
+    check(!FormReport.repLine(highFromAngle, pattern: .squat, camera: .angled).contains("above"),
+          "a squat filmed from an angle by a high phone, which reads as hips above the knees, isn't called high")
     var pressRep = rep
     pressRep.kneeMax = 177
     check(FormReport.repLine(pressRep, pattern: .legPress, camera: .angled).contains("fully straight") == false
@@ -454,7 +461,7 @@ let seedPatterns: [(String, ExerciseCategory, Equipment, LiftPattern)] = [
 for (name, category, equipment, expected) in seedPatterns {
     check(LiftPattern.of(name: name, category: category, equipment: equipment) == expected, "\(name) is checked as \(expected.rawValue)")
 }
-check(LiftPattern.of(name: "Romanian Deadlift", category: .legs, equipment: .barbell) == .hinge, "an RDL is a hinge")
+check(LiftPattern.of(name: "Romanian Deadlift", category: .legs, equipment: .barbell) == .hingeFromTop, "an RDL is a hinge that starts standing")
 check(LiftPattern.of(name: "Leg Curl", category: .legs, equipment: .machine) == .other, "a leg curl isn't an arm curl")
 check(LiftPattern.of(name: "Machine Press", category: .shoulders, equipment: .machine) == .overheadPress, "a press under Shoulders is overhead")
 
