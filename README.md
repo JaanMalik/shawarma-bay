@@ -58,7 +58,8 @@ either order. Deleting a set, or an exercise, deletes its videos (a set with a v
 2. In LiftLog: **Settings > Form check > Anthropic API key**, paste the key and tap **Save key**.
    LiftLog checks it straight away (that check is free).
 3. Log a set with a video, then tap the set in the history and tap **Check my form**. It takes
-   about a minute. Keep the screen open until it's done.
+   about a minute. Keep LiftLog open until it's done; the screen stays on while it works. If you
+   lock the phone or switch apps partway, the check may stop, and you can start it again.
 
 What it costs: about 10 to 20 cents a check (Claude Opus 5.5 at $4 per million tokens in and $20
 per million out; the result screen shows the actual cost). If a safety filter wrongly declines a
