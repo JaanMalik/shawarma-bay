@@ -537,6 +537,138 @@ if let rep = squat?.reps.first {
           && FormReport.repLine(pressRep, pattern: .legPress).contains("fully straight"), "\"knees fully straight\" is only said from the side")
 }
 
+// MARK: Form check: second review, reps and camera
+
+/// Five preacher curls. After the last one the bar goes onto the hooks at the top, the hands let
+/// go and the arms come off the pad, opening the elbows partway.
+let rehooked = makeTrack(duration: 16) { t -> PoseSample in
+    let top = 12.75
+    switch t {
+    case ..<top: return armPose(t, arm: 45, elbow: 160 - 120 * repWave(t, lead: 1.5, reps: 5, period: 2.5), lean: 10)
+    case ..<(top + 0.4): return armPose(t, arm: 45, elbow: 40 + 15 * ramp(t, top, top + 0.4), lean: 10)
+    default: return armPose(t, arm: 45 * (1 - ramp(t, top + 0.4, top + 1.4)), elbow: 55 + 55 * ramp(t, top + 0.4, top + 1.4), lean: 10)
+    }
+}
+let rehookedCurls = FormAnalyzer.measure(track: rehooked, pattern: .curl)
+check(rehookedCurls?.reps.count == 5, "five curls, the last one put back on the hooks at the top (found \(rehookedCurls?.reps.count ?? -1))")
+if let reps = rehookedCurls?.reps, let last = reps.last, reps.count == 5 {
+    check((last.upperArmSwing ?? 99) < 10,
+          "taking the arms off the pad after hooking the bar isn't measured as upper-arm swing (\(FormReport.degrees(last.upperArmSwing ?? 0)))")
+    check(last.endTime == last.turnTime, "the last curl ends at the top, so putting the bar away isn't timed as its way down")
+    let frames = FormAnalyzer.keyFrames(track: rehooked, measurements: rehookedCurls)
+    check(!frames.contains { $0.time > last.turnTime + 0.2 }, "no key frame shows the bar going onto the hooks as part of a rep")
+}
+check(preacherCurls?.reps.last.map { $0.endTime - $0.turnTime > 1 } == true, "a last curl lowered all the way keeps its way down")
+/// The same set, but the last curl is lowered only to 140°, short of the usual 160°.
+let shortLastLowering = makeTrack(duration: 16) { t -> PoseSample in
+    let elbow = 160 - 120 * repWave(t, lead: 1.5, reps: 5, period: 2.5)
+    return armPose(t, arm: 45, elbow: t > 12.75 ? min(elbow, 140) : elbow, lean: 10)
+}
+check(FormAnalyzer.measure(track: shortLastLowering, pattern: .curl)?.reps.last.map { $0.endTime - $0.turnTime > 0.5 } == true,
+      "a last curl lowered most of the way still has its way down")
+
+/// Five deadlifts from the floor, each lowered in 1.2 s and paused on the floor for a second. The
+/// first pull, from a dead stop, takes 2.6 s and the others 1.2 s.
+let slowFirstPull = makeTrack(duration: 21) { t -> PoseSample in
+    var from = 1.5
+    for up in [2.6, 1.2, 1.2, 1.2, 1.2] {
+        if t < from { break }
+        if t < from + up { return deadliftPose(t, lift: (1 - cos(.pi * (t - from) / up)) / 2) }
+        if t < from + up + 1.2 { return deadliftPose(t, lift: (1 + cos(.pi * (t - from - up) / 1.2)) / 2) }
+        from += up + 2.2
+    }
+    return deadliftPose(t, lift: 0)
+}
+let slowPulls = FormAnalyzer.measure(track: slowFirstPull, pattern: .hinge)
+check(slowPulls?.reps.count == 5, "five deadlifts with a slow first pull")
+
+/// A side-on calf raise. bend is how far the knees are bent while getting under the pads, as a
+/// squat's depth, and rise how high the heels are, 1 at the top and below 0 under the platform.
+func calfPose(_ t: Double, bend: Double, rise: Double) -> PoseSample {
+    var sample = squatPose(t, depth: bend)
+    for (name, p) in sample.joints { sample.joints[name] = JointPoint(x: p.x, y: p.y - 0.04 * rise, confidence: p.confidence) }
+    return sample
+}
+/// Stands up under the pads, waits 0.7 s, does 5 raises with the heels dropping below the platform
+/// between them, and steps back out.
+let calfUnrack = makeTrack(duration: 17) { t -> PoseSample in
+    if t < 3 { return calfPose(t, bend: 0.35 * (1 - ramp(t, 1.5, 2.3)), rise: 0) }
+    if t < 13 {
+        let u = (t - 3) / 2, low = u < 0.5 ? 0 : -0.4
+        return calfPose(t, bend: 0, rise: low + (1 - low) * (1 - cos(2 * .pi * u)) / 2)
+    }
+    return calfPose(t, bend: 0.35 * ramp(t, 14, 14.8), rise: -0.4 * (1 - ramp(t, 13, 13.5)))
+}
+let calfRaises = FormAnalyzer.measure(track: calfUnrack, pattern: .calfRaise)
+check(calfRaises?.reps.count == 5, "five calf raises between getting under the pads and stepping out")
+
+/// A pose filmed from `azimuth` degrees off the front, 90 being side-on: distances front to back
+/// shrink, and the left and right joints spread out to their real width apart.
+func filmedFrom(_ azimuth: Double, _ sample: PoseSample) -> PoseSample {
+    let halfWidth: [BodyJoint: Double] = [.leftShoulder: -0.1, .rightShoulder: 0.1, .leftElbow: -0.12, .rightElbow: 0.12,
+                                          .leftWrist: -0.11, .rightWrist: 0.11, .leftHip: -0.08, .rightHip: 0.08,
+                                          .leftKnee: -0.08, .rightKnee: 0.08, .leftAnkle: -0.08, .rightAnkle: 0.08]
+    var turned = sample
+    for (name, p) in sample.joints {
+        let across = BodyJoint(rawValue: name).flatMap { halfWidth[$0] } ?? 0
+        turned.joints[name] = JointPoint(x: 0.5 + (p.x - 0.5) * sin(deg(azimuth)) + across * cos(deg(azimuth)), y: p.y, confidence: p.confidence)
+    }
+    return turned
+}
+let rowsFromFront = PoseTrack(duration: rowFromFloor.duration, aspect: 1, framesLooked: rowFromFloor.framesLooked,
+                              samples: rowFromFloor.samples.map { filmedFrom(0, $0) })
+check(FormAnalyzer.measure(track: rowsFromFront, pattern: .row)?.camera == .front, "rows filmed from the front are still the front")
+let squatsFrom45 = PoseTrack(duration: squatTrack.duration, aspect: 1, framesLooked: squatTrack.framesLooked,
+                             samples: squatTrack.samples.map { filmedFrom(45, $0) })
+check(FormAnalyzer.measure(track: squatsFrom45, pattern: .squat)?.camera == .angled, "squats filmed from 45° are still angled")
+
+/// A bench press filmed from the lifter's feet with the phone at bench height. The torso points
+/// at the phone, so the neck and hips nearly meet in the picture while the shoulders are apart.
+/// press 0 is the bar at the chest, 1 lockout. Then the lifter puts their hands down by their
+/// hips (`down`), sits up (`sit`) and stands (`stand`).
+func endOnBenchPose(_ t: Double, press p: Double, down: Double = 0, sit: Double = 0, stand: Double = 0) -> PoseSample {
+    let up = 0.11 * sit, lift = 0.11 * stand
+    let shoulderY = 0.6 - up - lift, hipY = 0.61 - lift
+    var j: [BodyJoint: (Double, Double)] = [.neck: (0.5, shoulderY), .root: (0.5, hipY), .nose: (0.5, shoulderY - 0.015 - 0.03 * sit)]
+    for (sign, s, e, w, h, k, a) in [(-1.0, BodyJoint.leftShoulder, BodyJoint.leftElbow, BodyJoint.leftWrist, BodyJoint.leftHip, BodyJoint.leftKnee, BodyJoint.leftAnkle),
+                                    (1.0, .rightShoulder, .rightElbow, .rightWrist, .rightHip, .rightKnee, .rightAnkle)] {
+        let pressedElbow = (0.5 + sign * (0.09 - 0.042 * p), 0.61 - 0.08 * p)
+        let pressedWrist = (0.5 + sign * 0.05, 0.58 - 0.12 * p)
+        let restingElbow = (0.5 + sign * 0.06, shoulderY + 0.06), restingWrist = (0.5 + sign * 0.06, hipY + 0.02)
+        j[s] = (0.5 + sign * 0.045, shoulderY)
+        j[e] = (pressedElbow.0 + (restingElbow.0 - pressedElbow.0) * down, pressedElbow.1 + (restingElbow.1 - pressedElbow.1) * down)
+        j[w] = (pressedWrist.0 + (restingWrist.0 - pressedWrist.0) * down, pressedWrist.1 + (restingWrist.1 - pressedWrist.1) * down)
+        j[h] = (0.5 + sign * 0.025, hipY)
+        j[k] = (0.5 + sign * 0.035, 0.65 - 0.5 * lift)
+        j[a] = (0.5 + sign * 0.05, 0.72)
+    }
+    return pose(t, j)
+}
+let endOnBench = makeTrack(duration: 22) { t in endOnBenchPose(t, press: 1 - repWave(t, lead: 1.5, reps: 8, period: 2.5)) }
+let endOn = FormAnalyzer.measure(track: endOnBench, pattern: .benchPress)
+check(approx(FormAnalyzer.torsoLength(endOnBench), 0.09, 0.01),
+      "a torso seen end-on uses the shoulder width as its yardstick (\(String(format: "%.2f", FormAnalyzer.torsoLength(endOnBench))))")
+check(endOn?.camera == .front && endOn?.reps.count == 8, "bench filmed from the feet at bench height is a front view with 8 reps (\(endOn?.camera.rawValue ?? "nil"), \(endOn?.reps.count ?? -1))")
+if let endOn {
+    check(FormReport.lines(endOn, loggedReps: 8).allSatisfy { !$0.contains("°") }, "a bench filmed end-on gives no joint angles as if from the side")
+}
+let endOnGetUp = makeTrack(duration: 27) { t in
+    endOnBenchPose(t, press: 1 - repWave(t, lead: 1.5, reps: 8, period: 2.5), down: ramp(t, 22, 23), sit: ramp(t, 23.5, 24.5), stand: ramp(t, 25, 26))
+}
+check(FormAnalyzer.measure(track: endOnGetUp, pattern: .benchPress)?.reps.count == 8, "getting up after a bench set filmed end-on isn't counted as a rep")
+
+// Exercise names from the + button that name the bench or position: the arm lift wins, and a row
+// is the word itself.
+for (name, category, equipment, expected) in [
+    ("Incline Dumbbell Curl", ExerciseCategory.arms, Equipment.dumbbell, LiftPattern.curl), ("Incline Skull Crusher", .arms, .ezBar, .tricepsExtension),
+    ("Overhead Triceps Extension", .arms, .dumbbell, .tricepsExtension), ("Overhead Cable Triceps Extension", .arms, .cable, .tricepsExtension),
+    ("Narrow-Grip EZ Bar Curl", .arms, .ezBar, .curl), ("Narrow Grip Triceps Pushdown", .arms, .cable, .tricepsExtension),
+    ("Narrow Grip Lat Pulldown", .back, .cable, .other), ("Incline Dumbbell Row", .back, .dumbbell, .row),
+    ("Seated Cable Rows", .back, .cable, .row), ("Overhead Press", .shoulders, .barbell, .overheadPress), ("Close-Grip Bench Press", .chest, .barbell, .benchPress),
+] {
+    check(LiftPattern.of(name: name, category: category, equipment: equipment) == expected, "\(name) is checked as \(expected.rawValue)")
+}
+
 // MARK: Form check: kinds of lift
 
 let seedPatterns: [(String, ExerciseCategory, Equipment, LiftPattern)] = [

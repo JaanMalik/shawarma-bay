@@ -290,20 +290,25 @@ enum LiftPattern: String, Codable, CaseIterable {
     case calfRaise
     case other
 
+    /// The kind of lift, from words in the exercise's name. Curls and triceps work come before
+    /// presses and rows, because they are often named for the bench or the position they're done
+    /// in, like "Incline Dumbbell Curl" or "Overhead Triceps Extension". A row is named by the
+    /// word itself, so a "Narrow-Grip" lift isn't one.
     static func of(name: String, category: ExerciseCategory, equipment: Equipment) -> LiftPattern {
         let n = name.lowercased()
         func has(_ words: String...) -> Bool { words.contains { n.contains($0) } }
+        let words = Set(n.split { !$0.isLetter }.map(String.init))
         if has("leg press") { return .legPress }
         if has("calf") { return .calfRaise }
         if has("leg curl", "hamstring curl", "leg extension") { return .other }
         if has("rdl", "romanian", "good morning", "back extension", "hyperextension") { return .hingeFromTop }
         if has("deadlift", "rack pull") { return .hinge }
         if has("squat", "lunge") { return .squat }
-        if has("military", "overhead", "ohp", "shoulder press", "push press", "arnold") { return .overheadPress }
-        if has("bench", "incline", "decline", "chest press", "floor press") { return .benchPress }
-        if has("row") { return .row }
         if has("tricep", "skull", "kickback", "pushdown", "extension") { return .tricepsExtension }
         if has("curl") { return .curl }
+        if !words.isDisjoint(with: ["row", "rows", "rowing"]) { return .row }
+        if has("military", "overhead", "ohp", "shoulder press", "push press", "arnold") { return .overheadPress }
+        if has("bench", "incline", "decline", "chest press", "floor press") { return .benchPress }
         if has("press") {
             switch category {
             case .shoulders: return .overheadPress
@@ -627,7 +632,9 @@ enum RepFinder {
     /// the last moment before the turn, and the first after it, still 95% of that swing away from
     /// the turn. The first rep's first half is then capped at 1.5 times the usual first half, and
     /// the last rep's second half likewise when it is the lowering. A slow last lift is left alone,
-    /// since a grinding last rep is real. `times` are the seconds of `v`.
+    /// since a grinding last rep is real. A last lift that never comes most of the way back down,
+    /// like a preacher curl set on the hooks at the top, ends at its turn, so putting the bar away
+    /// isn't measured as part of the rep. `times` are the seconds of `v`.
     static func trimEdges(_ spans: [RepSpan], _ v: [Double], times: [Double], lowersFirst: Bool) -> [RepSpan] {
         guard spans.count >= 3 else { return spans }
         var result = spans
@@ -648,9 +655,14 @@ enum RepFinder {
         result[0] = first
 
         var last = spans[spans.count - 1]
-        let fall = abs(endLevel - v[last.turn]) * 0.95
-        if let i = stride(from: last.turn + 1, through: last.end, by: 1).first(where: { abs(v[$0] - v[last.turn]) >= fall }) {
+        let fall = abs(endLevel - v[last.turn])
+        if let i = stride(from: last.turn + 1, through: last.end, by: 1).first(where: { abs(v[$0] - v[last.turn]) >= fall * 0.95 }) {
             last.end = i
+        } else if !lowersFirst, (last.turn...last.end).allSatisfy({ abs(v[$0] - v[last.turn]) < fall * 0.8 }) {
+            // Never 80% of the way back: the weight was put away, not lowered. Nothing after the
+            // turn is measured, not even the usual 0.3 s past the end.
+            last.end = last.turn
+            last.outerEnd = last.turn
         }
         if !lowersFirst {
             while last.end - 1 > last.turn, times[last.end] - times[last.turn] > 1.5 * secondHalf {
@@ -818,7 +830,9 @@ enum FormAnalyzer {
         return result
     }
 
-    /// Typical distance from neck to hips, the yardstick for heights and drift.
+    /// Typical distance from neck to hips, the yardstick for heights and drift. A phone at the feet
+    /// or the head of a bench looks along the torso and sees it only a few pixels long, while the
+    /// shoulders still look apart, so then their width is the yardstick.
     static func torsoLength(_ track: PoseTrack) -> Double {
         var lengths: [Double] = []
         for s in track.samples {
@@ -834,7 +848,16 @@ enum FormAnalyzer {
             }
         }
         let median = RepFinder.percentile(lengths, 0.5)
-        return median > 0.02 ? median : 0.3
+        if median > 0.02 { return median }
+        if !lengths.isEmpty {
+            let widths = track.samples.compactMap { s -> Double? in
+                guard let l = s.point(.leftShoulder), let r = s.point(.rightShoulder) else { return nil }
+                return FormGeometry.distance(l, r, aspect: track.aspect)
+            }
+            let shoulders = RepFinder.percentile(widths, 0.5)
+            if shoulders > 0.02 { return shoulders }
+        }
+        return 0.3
     }
 
     private static func smoothingWindow(_ indices: [Int], samples: [PoseSample]) -> Int {
