@@ -76,6 +76,12 @@ enum FormGeometry {
         return acos(cosine) * 180 / .pi
     }
 
+    /// Which way the limb from `a` to `c` bends at `b` in the picture. Only the sign means
+    /// anything: it flips when the joint bends the other way, and it is 0 with the three in line.
+    static func bend(_ a: JointPoint, _ b: JointPoint, _ c: JointPoint) -> Double {
+        (a.x - b.x) * (c.y - b.y) - (a.y - b.y) * (c.x - b.x)
+    }
+
     /// How far the line from `lower` up to `upper` tips away from straight up, in degrees:
     /// 0 is upright, 90 is level with the floor.
     static func lean(upper: JointPoint, lower: JointPoint, aspect: Double) -> Double {
@@ -83,6 +89,12 @@ enum FormGeometry {
         let dy = lower.y - upper.y
         guard dx > 0 || dy != 0 else { return 0 }
         return atan2(dx, dy) * 180 / .pi
+    }
+
+    /// Like `lean`, but toward one side of the picture is positive and toward the other negative,
+    /// so a torso rocking from leaning forward to leaning back reads as the whole swing.
+    static func tilt(upper: JointPoint, lower: JointPoint, aspect: Double) -> Double {
+        atan2((upper.x - lower.x) * aspect, lower.y - upper.y) * 180 / .pi
     }
 
     static func distance(_ a: JointPoint, _ b: JointPoint, aspect: Double) -> Double {
@@ -380,7 +392,8 @@ enum CameraAngle: String, Codable {
 
 // MARK: - Measurements
 
-/// What the phone measured for one rep. Angles are in degrees, and are 2D estimates.
+/// What the phone measured for one rep. Angles are in degrees, and are 2D estimates. A hip or knee
+/// bent past straight, the other way from how it bends in the rep, reads over 180°.
 struct RepMeasure: Codable, Hashable {
     var number: Int
     var startTime: Double
@@ -412,6 +425,12 @@ struct RepMeasure: Codable, Hashable {
     /// Change in torso lean over the first third of the pull (deadlifts). Positive means the torso
     /// tipped further over, so the hips rose before the chest.
     var earlyLeanChange: Double?
+    /// How far the torso rocked over the rep, in degrees. Unlike the lean, it keeps the side the
+    /// torso leans to, so leaning forward and then back counts both. nil in checks saved before.
+    var torsoSwing: Double?
+    /// True when one knee was far below the other at the counted point, as in a lunge or a split
+    /// squat. The knee angles and depth are then the front leg's.
+    var splitStance: Bool?
 
     init(number: Int, startTime: Double, turnTime: Double, endTime: Double) {
         self.number = number
@@ -927,26 +946,34 @@ enum FormAnalyzer {
         return .angled
     }
 
-    private static func torsoLean(_ s: PoseSample, side: BodySide, aspect: Double) -> Double? {
-        if let neck = s.point(.neck), let root = s.point(.root) {
-            return FormGeometry.lean(upper: neck, lower: root, aspect: aspect)
-        }
-        if let shoulder = s.point(side.shoulder), let hip = s.point(side.hip) {
-            return FormGeometry.lean(upper: shoulder, lower: hip, aspect: aspect)
-        }
+    /// The neck and hips, or the shoulder and hip on `side` when those weren't found.
+    private static func torsoLine(_ s: PoseSample, side: BodySide) -> (upper: JointPoint, lower: JointPoint)? {
+        if let neck = s.point(.neck), let root = s.point(.root) { return (neck, root) }
+        if let shoulder = s.point(side.shoulder), let hip = s.point(side.hip) { return (shoulder, hip) }
         return nil
     }
 
-    private static func jointAngle(_ s: PoseSample, _ a: BodyJoint, _ b: BodyJoint, _ c: BodyJoint, aspect: Double) -> Double? {
+    private static func torsoLean(_ s: PoseSample, side: BodySide, aspect: Double) -> Double? {
+        torsoLine(s, side: side).map { FormGeometry.lean(upper: $0.upper, lower: $0.lower, aspect: aspect) }
+    }
+
+    /// The angle at `b`. Given `way`, the sign of `FormGeometry.bend` where the joint is clearly
+    /// bent, a frame bent the other way is past straight and reads as 360° less the angle, so
+    /// leaning back at lockout reads over 180° instead of like stopping short of it. Only up to 45°
+    /// past straight: a hip or knee doesn't bend back further, so more than that is a joint the
+    /// phone put in the wrong place.
+    private static func jointAngle(_ s: PoseSample, _ a: BodyJoint, _ b: BodyJoint, _ c: BodyJoint, aspect: Double, bending way: Double? = nil) -> Double? {
         guard let pa = s.point(a), let pb = s.point(b), let pc = s.point(c) else { return nil }
-        return FormGeometry.angle(pa, pb, pc, aspect: aspect)
+        let angle = FormGeometry.angle(pa, pb, pc, aspect: aspect)
+        if let way, angle > 135, FormGeometry.bend(pa, pb, pc) * way < 0 { return 360 - angle }
+        return angle
     }
 
     /// The lowest and highest of a rep's per-frame values, after averaging each with its
-    /// neighbours, so one jittery frame doesn't set the number.
-    static func extent(_ values: [Double]) -> (low: Double, high: Double)? {
+    /// neighbours, `count` values at a time, so one jittery frame doesn't set the number.
+    static func extent(_ values: [Double], averaging count: Int = 3) -> (low: Double, high: Double)? {
         guard values.count >= 2 else { return nil }
-        let smoothed = RepFinder.smooth(values, window: 3)
+        let smoothed = RepFinder.smooth(values, window: count)
         guard let low = smoothed.min(), let high = smoothed.max() else { return nil }
         return (low, high)
     }
@@ -964,38 +991,91 @@ enum FormAnalyzer {
         let turn = samples[turnIndex]
         var rep = RepMeasure(number: number, startTime: samples[startIndex].time, turnTime: turn.time, endTime: samples[endIndex].time)
 
-        func knee(_ s: PoseSample) -> Double? { jointAngle(s, side.hip, side.knee, side.ankle, aspect: aspect) }
-        func hip(_ s: PoseSample) -> Double? { jointAngle(s, side.shoulder, side.hip, side.knee, aspect: aspect) }
+        // Ranges average each frame with its neighbours within 0.15 s: one either side at 8 frames
+        // a second. A long video is looked at less often, and averaging frames that far apart
+        // would flatten a real lockout or the top of a curl, so there each frame counts as it is.
+        // As in finding the reps, the usual gap between the rep's frames decides.
+        let gaps = zip(window, window.dropFirst()).map { $1.time - $0.time }.sorted()
+        let smoothing = gaps.isEmpty ? 1 : 2 * Int(0.15 / max(gaps[gaps.count / 2], 0.01)) + 1
+
+        // In a lunge or split squat the back knee drops near the floor, about a thigh's length
+        // below the front one, whose thigh is the one near level. The knee and depth that matter
+        // are the front leg's, whichever side the camera sees better. Judged by the frames around
+        // the turn, since the far knee is easily missed in one of them.
+        var leg = side
+        let kneeDrops = window.filter { abs($0.time - turn.time) <= 0.3 }.compactMap { s -> Double? in
+            guard let left = s.point(.leftKnee), let right = s.point(.rightKnee) else { return nil }
+            return left.y - right.y
+        }
+        let kneeDrop = RepFinder.percentile(kneeDrops, 0.5)
+        if abs(kneeDrop) > 0.4 * torso {
+            leg = kneeDrop < 0 ? .left : .right
+            rep.splitStance = true
+        }
+
+        // Which way the hip and knee bend in this rep, going by most of the frames where they are
+        // clearly bent. A frame bent the other way is past straight.
+        func usualBend(_ a: BodyJoint, _ b: BodyJoint, _ c: BodyJoint) -> Double? {
+            let votes = window.reduce(0.0) { sum, s in
+                guard let pa = s.point(a), let pb = s.point(b), let pc = s.point(c),
+                      FormGeometry.angle(pa, pb, pc, aspect: aspect) < 150 else { return sum }
+                return sum + (FormGeometry.bend(pa, pb, pc) > 0 ? 1 : -1)
+            }
+            return votes == 0 ? nil : votes
+        }
+        let kneeWay = usualBend(leg.hip, leg.knee, leg.ankle), hipWay = usualBend(side.shoulder, side.hip, side.knee)
+        func knee(_ s: PoseSample) -> Double? { jointAngle(s, leg.hip, leg.knee, leg.ankle, aspect: aspect, bending: kneeWay) }
+        func hip(_ s: PoseSample) -> Double? { jointAngle(s, side.shoulder, side.hip, side.knee, aspect: aspect, bending: hipWay) }
         func elbow(_ s: PoseSample) -> Double? { jointAngle(s, side.shoulder, side.elbow, side.wrist, aspect: aspect) }
         func lean(_ s: PoseSample) -> Double? { torsoLean(s, side: side, aspect: aspect) }
+        func depth(_ s: PoseSample) -> Double? {
+            guard let hipPoint = s.point(leg.hip) ?? s.point(.root), let kneePoint = s.point(leg.knee) else { return nil }
+            let thigh = FormGeometry.distance(hipPoint, kneePoint, aspect: aspect)
+            return thigh > 0.01 ? (hipPoint.y - kneePoint.y) / thigh : nil
+        }
+        // In a split stance the front leg is often the far one, which the phone easily misses for a
+        // frame, so its knee and depth can come from the nearest frame within 0.2 s of the turn.
+        func atTurn(_ value: (PoseSample) -> Double?) -> Double? {
+            if let v = value(turn) { return v }
+            guard rep.splitStance == true else { return nil }
+            let near = window.filter { abs($0.time - turn.time) <= 0.2 }.sorted { abs($0.time - turn.time) < abs($1.time - turn.time) }
+            return near.compactMap(value).first
+        }
 
-        rep.kneeAtTurn = knee(turn)
+        rep.kneeAtTurn = atTurn(knee)
         rep.hipAtTurn = hip(turn)
         rep.elbowAtTurn = elbow(turn)
         rep.leanAtTurn = lean(turn)
-        if let knees = extent(window.compactMap(knee)) {
+        // The rep counting can't tell a knee bent past straight from one short of it, so on a leg
+        // press it can start or end a rep where the knee passes straight, leaving the top of the
+        // press, past straight, just outside. So the knee's range looks 0.3 s past the start and
+        // end, whatever turn is there.
+        let kneeFrames = samples.filter { $0.time >= samples[startIndex].time - reach && $0.time <= samples[endIndex].time + reach }
+        if let knees = extent(kneeFrames.compactMap(knee), averaging: smoothing) {
             rep.kneeMin = knees.low
             rep.kneeMax = knees.high
+            let tops = RepFinder.smooth(kneeFrames.compactMap(knee), window: max(smoothing, 3)).sorted(by: >)
+            if knees.high > 180 { rep.kneeMax = tops.count >= 2 ? max(180, min(knees.high, tops[1])) : 180 }
         }
-        if let elbows = extent(window.compactMap(elbow)) {
+        if let elbows = extent(window.compactMap(elbow), averaging: smoothing) {
             rep.elbowMin = elbows.low
             rep.elbowMax = elbows.high
         }
-        if let leans = extent(window.compactMap(lean)) {
+        if let leans = extent(window.compactMap(lean), averaging: smoothing) {
             rep.leanMin = leans.low
             rep.leanMax = leans.high
         }
+        // The lean folds at upright, so rocking from 10° forward to 10° back would read as 10°.
+        let tilts = window.compactMap { s in torsoLine(s, side: side).map { FormGeometry.tilt(upper: $0.upper, lower: $0.lower, aspect: aspect) } }
+        if let swing = extent(tilts, averaging: max(smoothing, 3)) { rep.torsoSwing = swing.high - swing.low }
 
-        if let hipPoint = turn.point(side.hip) ?? turn.point(.root), let kneePoint = turn.point(side.knee) {
-            let thigh = FormGeometry.distance(hipPoint, kneePoint, aspect: aspect)
-            if thigh > 0.01 { rep.hipBelowKnee = (hipPoint.y - kneePoint.y) / thigh }
-        }
+        rep.hipBelowKnee = atTurn(depth)
 
         // Bar drift follows one wrist the whole rep. Averaging both wrists only when both are seen
         // would make the hand position jump by half the grip width each time the far one is lost.
         var handXs = window.compactMap { $0.point(side.wrist)?.x }
         if handXs.count < 3 { handXs = window.compactMap { $0.point(side.other.wrist)?.x } }
-        if handXs.count >= 3, let hands = extent(handXs) {
+        if handXs.count >= 3, let hands = extent(handXs, averaging: max(smoothing, 3)) {
             rep.barDrift = (hands.high - hands.low) * aspect / torso
         }
 
@@ -1005,7 +1085,7 @@ enum FormAnalyzer {
             guard let shoulder = s.point(side.shoulder), let elbowPoint = s.point(side.elbow) else { return nil }
             return FormGeometry.upperArm(shoulder: shoulder, elbow: elbowPoint, aspect: aspect)
         }
-        if arm.count >= 3, let swing = extent(arm.map { FormGeometry.unwrap($0, around: arm[0]) }) {
+        if arm.count >= 3, let swing = extent(arm.map { FormGeometry.unwrap($0, around: arm[0]) }, averaging: max(smoothing, 3)) {
             rep.upperArmSwing = swing.high - swing.low
         }
 
@@ -1014,7 +1094,7 @@ enum FormAnalyzer {
             guard let k = s.point(side.knee), let a = s.point(side.ankle) else { return nil }
             return FormGeometry.distance(k, a, aspect: aspect)
         }
-        if hipYs.count >= 3, let hips = extent(hipYs), !shins.isEmpty {
+        if hipYs.count >= 3, let hips = extent(hipYs, averaging: smoothing), !shins.isEmpty {
             let shin = RepFinder.percentile(shins, 0.5)
             if shin > 0.01 { rep.riseShare = (hips.high - hips.low) / shin }
         }
@@ -1124,15 +1204,22 @@ enum FormReport {
         } else {
             switch pattern {
             case .squat:
-                if let k = r.kneeAtTurn { parts.append("knees \(deg(k))") }
+                let split = r.splitStance == true
+                if let k = r.kneeAtTurn { parts.append(split ? "front knee \(deg(k))" : "knees \(deg(k))") }
                 // From an angle the nearer of hip and knee sits lower in the picture when the
                 // phone is above them (higher when it's below), by more than a squat's margin
                 // either side of parallel, so even which one is lower can come out backwards.
                 // Depth is left to the frames there.
-                if let d = r.hipBelowKnee, camera != .angled { parts.append(depthText(d, rough: rough)) }
+                if let d = r.hipBelowKnee, camera != .angled { parts.append(depthText(d, rough: rough, knees: split ? "the front knee" : "the knees")) }
                 if let l = r.leanAtTurn { parts.append("torso lean \(deg(l))") }
             case .hinge:
-                if let h = r.hipAtTurn { parts.append("hips \(deg(h)) at lockout") }
+                if let h = r.hipAtTurn {
+                    if let past = pastStraight(h), !rough {
+                        parts.append("hips about \(degrees(past)) past straight at lockout (leaning back)")
+                    } else {
+                        parts.append("hips \(deg(min(h, 180))) at lockout")
+                    }
+                }
                 if let l = r.leanMax { parts.append("torso lean \(deg(l)) at the start") }
                 if let c = r.earlyLeanChange {
                     parts.append(c > 5 ? "hips rose before the chest early in the pull (torso tipped \(deg(c)) further)" : "chest and hips rose together")
@@ -1153,13 +1240,13 @@ enum FormReport {
             case .row:
                 if let e = r.elbowAtTurn { parts.append("elbows \(deg(e)) at the top") }
                 if let l = r.leanAtTurn { parts.append("torso lean \(deg(l))") }
-                if let lo = r.leanMin, let hi = r.leanMax { parts.append("torso moved \(deg(hi - lo)) during the rep") }
+                if let m = torsoMoved(r) { parts.append("torso moved \(deg(m)) during the rep") }
             case .curl:
                 if let lo = r.elbowMin, let hi = r.elbowMax {
                     parts.append("elbow \(deg(lo)) at the top, \(deg(hi)) at the bottom (\(deg(hi - lo)) of range)")
                 }
                 if let s = r.upperArmSwing { parts.append("upper arm swung \(deg(s))") }
-                if let lo = r.leanMin, let hi = r.leanMax { parts.append("torso moved \(deg(hi - lo))") }
+                if let m = torsoMoved(r) { parts.append("torso moved \(deg(m))") }
             case .tricepsExtension:
                 if let lo = r.elbowMin, let hi = r.elbowMax {
                     parts.append("elbow \(deg(lo)) at the stretch, \(deg(hi)) at lockout (\(deg(hi - lo)) of range)")
@@ -1168,7 +1255,11 @@ enum FormReport {
             case .legPress:
                 if let k = r.kneeMin { parts.append("knees \(deg(k)) at the bottom") }
                 if let k = r.kneeMax {
-                    parts.append(k >= 175 && !rough ? "knees fully straight at the top (\(degrees(k)))" : "\(deg(k)) at the top")
+                    if let past = pastStraight(k), !rough {
+                        parts.append("knees past straight at the top, by about \(degrees(past))")
+                    } else {
+                        parts.append(k >= 175 && !rough ? "knees fully straight at the top (\(degrees(min(k, 180))))" : "\(deg(min(k, 180))) at the top")
+                    }
                 }
             case .calfRaise:
                 if let s = r.riseShare { parts.append("heels rose about \(share(s)) of shin length") }
@@ -1177,22 +1268,37 @@ enum FormReport {
             }
         }
         let words = pattern.halfWords
-        parts.append("\(words.first) \(seconds(r.turnTime - r.startTime)), \(words.second) \(seconds(r.endTime - r.turnTime))")
+        let firstHalf = "\(words.first) \(seconds(r.turnTime - r.startTime))"
+        // A rep put away at its turn, such as a curl set on the hooks at the top or a deadlift let
+        // go at lockout, has no second half to time.
+        parts.append(r.endTime > r.turnTime ? "\(firstHalf), \(words.second) \(seconds(r.endTime - r.turnTime))" : "\(firstHalf), then put away")
         return parts.joined(separator: " · ")
     }
 
     /// When the view couldn't be told (usually a side view whose far shoulder wasn't found), the
     /// thigh may look shorter than it is, so only the direction is given. Never used from an angle.
-    static func depthText(_ d: Double, rough: Bool = false) -> String {
+    static func depthText(_ d: Double, rough: Bool = false, knees: String = "the knees") -> String {
         if rough {
-            if d > 0.05 { return "hips look below the knees" }
-            if d >= -0.05 { return "hips look about level with the knees" }
-            return "hips look above the knees"
+            if d > 0.05 { return "hips look below \(knees)" }
+            if d >= -0.05 { return "hips look about level with \(knees)" }
+            return "hips look above \(knees)"
         }
         let pct = Int((abs(d) * 100).rounded())
-        if d > 0.05 { return "hips \(pct)% of thigh length below the knees (below parallel)" }
-        if d >= -0.05 { return "hips level with the knees (about parallel)" }
-        return "hips \(pct)% of thigh length above the knees (above parallel)"
+        if d > 0.05 { return "hips \(pct)% of thigh length below \(knees) (below parallel)" }
+        if d >= -0.05 { return "hips level with \(knees) (about parallel)" }
+        return "hips \(pct)% of thigh length above \(knees) (above parallel)"
+    }
+
+    /// How far a hip or knee is bent past straight, when that is more than the 6° or so a straight
+    /// one wobbles by in the picture. nil when it isn't.
+    static func pastStraight(_ angle: Double) -> Double? { angle > 186 ? angle - 180 : nil }
+
+    /// How far the torso moved over the rep. Checks saved before the swing was measured only have
+    /// the range of the lean, which folds at upright.
+    static func torsoMoved(_ r: RepMeasure) -> Double? {
+        if let swing = r.torsoSwing { return swing }
+        guard let lo = r.leanMin, let hi = r.leanMax else { return nil }
+        return hi - lo
     }
 
     static func degrees(_ v: Double) -> String { "\(Int(v.rounded()))°" }

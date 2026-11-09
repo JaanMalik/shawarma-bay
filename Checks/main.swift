@@ -555,6 +555,8 @@ if let reps = rehookedCurls?.reps, let last = reps.last, reps.count == 5 {
     check((last.upperArmSwing ?? 99) < 10,
           "taking the arms off the pad after hooking the bar isn't measured as upper-arm swing (\(FormReport.degrees(last.upperArmSwing ?? 0)))")
     check(last.endTime == last.turnTime, "the last curl ends at the top, so putting the bar away isn't timed as its way down")
+    let lastLine = FormReport.repLine(last, pattern: .curl)
+    check(lastLine.contains("then put away") && !lastLine.contains("down 0.0"), "a curl put on the hooks at the top isn't timed as lowered in no time: \(lastLine)")
     let frames = FormAnalyzer.keyFrames(track: rehooked, measurements: rehookedCurls)
     check(!frames.contains { $0.time > last.turnTime + 0.2 }, "no key frame shows the bar going onto the hooks as part of a rep")
 }
@@ -684,6 +686,103 @@ for (name, category, equipment, expected) in seedPatterns {
 check(LiftPattern.of(name: "Romanian Deadlift", category: .legs, equipment: .barbell) == .hingeFromTop, "an RDL is a hinge that starts standing")
 check(LiftPattern.of(name: "Leg Curl", category: .legs, equipment: .machine) == .other, "a leg curl isn't an arm curl")
 check(LiftPattern.of(name: "Machine Press", category: .shoulders, equipment: .machine) == .overheadPress, "a press under Shoulders is overhead")
+
+// MARK: Form check: second review, measuring
+
+/// The number right after `words` in a rep line, such as the 12 in "torso moved 12°".
+func number(after words: String, in line: String) -> Double? {
+    guard let range = line.range(of: words) else { return nil }
+    return Double(line[range.upperBound...].prefix { $0.isNumber })
+}
+
+// A 2-minute video is looked at only 320 times, under 3 frames a second. Averaging each frame with
+// the ones either side, that far apart, would cut the top and bottom off every curl.
+let longVideo = makeTrack(duration: 120, fps: 320.0 / 120) { t in curlPose(t, flex: repWave(t, lead: 1.5, reps: 40, period: 2.9)) }
+let longCurls = FormAnalyzer.measure(track: longVideo, pattern: .curl)?.reps ?? []
+check(longCurls.count == 40 && longCurls.allSatisfy { ($0.elbowMax ?? 0) - ($0.elbowMin ?? 0) > 105 },
+      "curls in a 2-minute video keep their range of 120° (found \(longCurls.count), smallest \(FormReport.degrees(longCurls.map { ($0.elbowMax ?? 0) - ($0.elbowMin ?? 0) }.min() ?? 0)))")
+
+/// A side-on split squat with the left leg, the one nearer the phone, behind. depth 0 is the top
+/// and 1 the bottom, with the front thigh level and the back knee near the floor. `missFrontKnee`
+/// loses the front knee, on the far side, at the very bottom, as the phone often does for a frame.
+func splitSquatPose(_ t: Double, depth d: Double, missFrontKnee: Bool = false) -> PoseSample {
+    func mix(_ top: (Double, Double), _ bottom: (Double, Double)) -> (Double, Double) {
+        (top.0 + (bottom.0 - top.0) * d, top.1 + (bottom.1 - top.1) * d)
+    }
+    let hip = mix((0.45, 0.52), (0.45, 0.70)), neck = (hip.0 + 0.03, hip.1 - 0.3)
+    var j: [BodyJoint: (Double, Double)] = [.neck: neck, .root: hip, .nose: (neck.0 + 0.04, neck.1 - 0.05)]
+    for (side, dx) in [(BodySide.left, -0.005), (.right, 0.005)] {
+        j[side.shoulder] = (neck.0 + dx, neck.1); j[side.elbow] = (neck.0 + dx, neck.1 + 0.13)
+        j[side.wrist] = (neck.0 + dx, neck.1 + 0.26); j[side.hip] = (hip.0 + dx, hip.1)
+    }
+    j[.rightKnee] = mix((0.58, 0.70), (0.65, 0.70)); j[.rightAnkle] = (0.65, 0.90)
+    j[.leftKnee] = mix((0.40, 0.71), (0.42, 0.89)); j[.leftAnkle] = (0.24, 0.87)
+    if missFrontKnee && d > 0.99 { j[.rightKnee] = nil }
+    return pose(t, j)
+}
+func splitSquatLines(missFrontKnee: Bool) -> [String] {
+    let track = makeTrack(duration: 18) { t in splitSquatPose(t, depth: repWave(t, lead: 1.5, reps: 5, period: 3), missFrontKnee: missFrontKnee) }
+    return FormAnalyzer.measure(track: track, pattern: LiftPattern.of(name: "Bulgarian Split Squat", category: .legs, equipment: .dumbbell))?
+        .reps.map { FormReport.repLine($0, pattern: .squat) } ?? []
+}
+let splitLines = splitSquatLines(missFrontKnee: false), frontKneeMissed = splitSquatLines(missFrontKnee: true)
+check(splitLines.count == 5 && splitLines.allSatisfy { $0.contains("front knee") && $0.contains("about parallel") }
+      && squat?.reps.allSatisfy({ !FormReport.repLine($0, pattern: .squat).contains("front") }) == true,
+      "a split squat's knee and depth are the front leg's, not the back knee's near the floor: \(splitLines.first ?? "")")
+// The frames next to the bottom are a little higher, so there depth is within 10% of parallel.
+check(frontKneeMissed.count == 5 && frontKneeMissed.allSatisfy { $0.contains("front knee") && ($0.contains("about parallel") || (number(after: "hips ", in: $0) ?? 100) <= 10) },
+      "a split squat whose far front knee is missed at the bottom still gets its knee and depth from the frames next to it: \(frontKneeMissed.first ?? "")")
+
+/// The side-on deadlift, with the torso `back` degrees behind upright at lockout (in front when
+/// negative). The bar goes straight up over the feet and is highest at lockout.
+func leaningDeadliftPose(_ t: Double, lift: Double, back: Double) -> PoseSample {
+    let d = 1 - lift
+    let ankle = (0.5, 0.9)
+    let a = deg(20 * d), b = deg(70 * d), c = deg(60 * d - back * lift)
+    let knee = (ankle.0 + 0.2 * sin(a), ankle.1 - 0.2 * cos(a))
+    let hip = (knee.0 - 0.2 * sin(b), knee.1 - 0.2 * cos(b))
+    let neck = (hip.0 + 0.3 * sin(c), hip.1 - 0.3 * cos(c))
+    return pose(t, bothSides([.neck: neck, .root: hip, .nose: (neck.0 + 0.04, neck.1 - 0.04)], shoulder: neck,
+                             elbow: (neck.0, neck.1 + 0.125), wrist: (0.52, 0.74 - 0.29 * lift), hip: hip, knee: knee, ankle: ankle))
+}
+func lockoutLines(back: Double) -> [String] {
+    let track = makeTrack(duration: 14) { t in leaningDeadliftPose(t, lift: repWave(t, lead: 1, reps: 3, period: 4), back: back) }
+    return FormAnalyzer.measure(track: track, pattern: .hinge)?.reps.map { FormReport.repLine($0, pattern: .hinge) } ?? []
+}
+let leanedBack = lockoutLines(back: 15), stoppedShort = lockoutLines(back: -15)
+check(leanedBack.count == 3 && leanedBack.allSatisfy { $0.contains("past straight at lockout (leaning back)") && approx(number(after: "hips about ", in: $0), 15, 3) }
+      && stoppedShort.count == 3 && stoppedShort.allSatisfy { approx(number(after: "hips ", in: $0), 165, 3) },
+      "leaning back 15° at lockout reads as past straight, not like stopping 15° short: \(leanedBack.first ?? "") | \(stoppedShort.first ?? "")")
+
+/// A side-on leg press: the thigh stays put and the knee opens from 70° to `top` degrees, over 180
+/// for knees that snap past straight, then pauses. 5 presses, 3 s apart.
+func legPressTrack(top: Double) -> PoseTrack {
+    makeTrack(duration: 18) { t in
+        let u = t - 1.5, inRep = u.truncatingRemainder(dividingBy: 3)
+        let depth = u >= 0 && u < 15 && inRep < 2.4 ? (1 - cos(2 * .pi * inRep / 2.4)) / 2 : 0
+        let hip = (0.35, 0.62), knee = (0.35 + 0.2 * cos(deg(50)), 0.62 - 0.2 * sin(deg(50)))
+        let shin = atan2(hip.1 - knee.1, hip.0 - knee.0) - deg(top + (70 - top) * depth)
+        let ankle = (knee.0 + 0.2 * cos(shin), knee.1 + 0.2 * sin(shin))
+        return pose(t, bothSides([.neck: (0.15, 0.42), .root: hip, .nose: (0.12, 0.38)],
+                                 shoulder: (0.15, 0.42), elbow: (0.2, 0.5), wrist: (0.25, 0.58), hip: hip, knee: knee, ankle: ankle))
+    }
+}
+func topLines(_ top: Double) -> [String] {
+    FormAnalyzer.measure(track: legPressTrack(top: top), pattern: .legPress)?.reps.map { FormReport.repLine($0, pattern: .legPress) } ?? []
+}
+let snappedPresses = topLines(190), straightPresses = topLines(180)
+check(snappedPresses.count == 5 && snappedPresses.allSatisfy { $0.contains("knees past straight at the top") && approx(number(after: "by about ", in: $0), 10, 5) }
+      && straightPresses.count == 5 && straightPresses.allSatisfy { $0.contains("knees fully straight at the top") },
+      "knees snapping 10° past straight on a leg press read as past straight, and a straight lockout as fully straight: \(snappedPresses.first ?? "") | \(straightPresses.first ?? "")")
+
+// Curls where the torso rocks from 10° forward at the bottom to 10° back at the top.
+let rockingCurls = makeTrack(duration: 12) { t -> PoseSample in
+    let flex = repWave(t, lead: 1, reps: 4, period: 2.5)
+    return armPose(t, arm: 0, elbow: 160 - 120 * flex, lean: 10 - 20 * flex)
+}
+let rocked = FormAnalyzer.measure(track: rockingCurls, pattern: .curl)?.reps.map { FormReport.repLine($0, pattern: .curl) } ?? []
+check(rocked.count == 4 && rocked.allSatisfy { approx(number(after: "torso moved ", in: $0), 20, 3) },
+      "a torso rocking from 10° forward to 10° back moved 20°, not 10°: \(rocked.first ?? "")")
 
 // MARK: Form check: key frames
 
