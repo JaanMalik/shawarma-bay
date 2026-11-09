@@ -286,6 +286,61 @@ let otherSet = LifterTracker.lifter(in: gym(missing: { $0 % 5 == 0 }) { t in
     [elsewhere(squatPose(t, depth: repWave(t, lead: 0.5, reps: 5, period: 3)), dx: -0.3, scale: 0.6)]
 }, aspect: 1)
 check(otherSet.count == 115 && onlyLifter(otherSet) && squats(in: otherSet) == 5, "someone doing their own set further back isn't taken for the lifter")
+func ankleless(_ joints: [String: JointPoint]) -> [String: JointPoint] {
+    var j = joints
+    for side in BodySide.allCases { j[side.ankle.rawValue]?.confidence = 0.1 }
+    return j
+}
+let anklesLost = LifterTracker.lifter(in: gym(missing: { _ in false }, others: { _ in [] }).enumerated().map { i, f in
+    i == 20 ? LifterTracker.Frame(time: f.time, people: f.people.map(ankleless)) : f
+}, aspect: 1)
+check(anklesLost.count == 144 && squats(in: anklesLost) == 5, "one frame where the phone loses both ankles doesn't split the lifter's trail")
+
+/// A lifter on a flat bench, filmed from the side with the head to the left. press 1 is the bar at
+/// lockout and 0 at the chest. sit 1 is sitting up on the bench with the hands on the knees, and
+/// stand 1 standing beside it.
+func benchPose(_ t: Double, press p: Double, sit: Double = 0, stand: Double = 0) -> PoseSample {
+    let lying: [BodyJoint: (Double, Double)] = [.nose: (0.26, 0.66), .neck: (0.30, 0.68), .root: (0.50, 0.70)]
+    let seated: [BodyJoint: (Double, Double)] = [.nose: (0.53, 0.45), .neck: (0.50, 0.50), .root: (0.50, 0.70)]
+    let standing: [BodyJoint: (Double, Double)] = [.nose: (0.53, 0.27), .neck: (0.50, 0.32), .root: (0.50, 0.52)]
+    let limbs: [[(Double, Double)]] = [
+        // shoulder, elbow, wrist, hip, knee, ankle
+        [(0.30, 0.68), (0.28 + 0.02 * p, 0.72 - 0.162 * p), (0.31, 0.596 - 0.16 * p), (0.50, 0.70), (0.66, 0.68), (0.70, 0.90)],
+        [(0.50, 0.50), (0.57, 0.60), (0.64, 0.66), (0.50, 0.70), (0.66, 0.70), (0.68, 0.90)],
+        [(0.50, 0.34), (0.50, 0.43), (0.51, 0.548), (0.50, 0.52), (0.51, 0.71), (0.50, 0.90)],
+    ]
+    func mix(_ a: (Double, Double), _ b: (Double, Double), _ c: (Double, Double)) -> (Double, Double) {
+        let ab = (a.0 + (b.0 - a.0) * sit, a.1 + (b.1 - a.1) * sit)
+        return (ab.0 + (c.0 - ab.0) * stand, ab.1 + (c.1 - ab.1) * stand)
+    }
+    var base: [BodyJoint: (Double, Double)] = [:]
+    for joint in [BodyJoint.nose, .neck, .root] { base[joint] = mix(lying[joint]!, seated[joint]!, standing[joint]!) }
+    let l = (0..<6).map { mix(limbs[0][$0], limbs[1][$0], limbs[2][$0]) }
+    return pose(t, bothSides(base, shoulder: l[0], elbow: l[1], wrist: l[2], hip: l[3], knee: l[4], ankle: l[5]))
+}
+/// A bench set of `reps` reps, 3 s each after 1.5 s at lockout, then the bar back in the rack,
+/// sitting up and standing up.
+func benchSet(reps: Int) -> (Double) -> PoseSample {
+    let end = 1.5 + 3 * Double(reps)
+    return { t in
+        switch t {
+        case ..<(end + 1): return benchPose(t, press: 1 - repWave(t, lead: 1.5, reps: reps, period: 3))
+        case ..<(end + 1.5): return benchPose(t, press: 1 - ramp(t, end + 1, end + 1.5))
+        case ..<(end + 3): return benchPose(t, press: 0, sit: ramp(t, end + 1.5, end + 3))
+        default: return benchPose(t, press: 0, sit: 1, stand: ramp(t, end + 3, end + 4.5))
+        }
+    }
+}
+// Someone standing still at the head of the bench, about as far from the phone as the lifter.
+let benchFrames = (0..<168).map { i -> LifterTracker.Frame in
+    let t = (Double(i) + 0.5) / 8
+    let lifter = benchPose(t, press: 1 - repWave(t, lead: 1.5, reps: 5, period: 3)).joints
+    let spotter = benchPose(t, press: 0, sit: 1, stand: 1).joints.mapValues { JointPoint(x: $0.x - 0.4, y: $0.y, confidence: $0.confidence) }
+    return LifterTracker.Frame(time: t, people: i % 2 == 0 ? [lifter, spotter] : [spotter, lifter])
+}
+let benched = LifterTracker.lifter(in: benchFrames, aspect: 1)
+check(benched.count == 168 && benched.allSatisfy { ($0.joints[BodyJoint.root.rawValue]?.x ?? 0) > 0.4 },
+      "a lifter lying on a bench is followed, not someone standing still beside the bench")
 
 // MARK: Form check: what counts as a rep
 
@@ -400,6 +455,39 @@ check(joined.count == 2 && joined[0].turn == 16 && joined[0].end == 18 && joined
 let fastTurns = (0..<6).map { RepSpan(start: 7 * $0, turn: 7 * $0 + 3, end: 7 * $0 + 7) }
 check(RepFinder.merge(fastTurns, Array(repeating: 1, count: 43), times: (0..<43).map { Double($0) / 10 }, countAtHigh: false).count == 6,
       "the reps of a fast set, 0.7 s apart, aren't joined")
+
+// Sitting up and standing after the bar is racked isn't a rep, however short the set.
+for reps in 1...3 {
+    let track = makeTrack(duration: 1.5 + 3 * Double(reps) + 6.5, benchSet(reps: reps))
+    let found = FormAnalyzer.measure(track: track, pattern: LiftPattern.of(name: "Bench Press", category: .chest, equipment: .barbell))?.reps ?? []
+    let turns = (0..<reps).map { 3 + 3 * Double($0) }
+    check(found.count == reps && zip(found, turns).allSatisfy { abs($0.turnTime - $1) <= 0.2 },
+          "a \(reps)-rep bench set, then getting up, is \(reps) rep\(reps == 1 ? "" : "s") at the chest (found \(found.map { FormReport.seconds($0.turnTime) }))")
+}
+// The middle rep of a triple where the phone missed the torso at the chest.
+let unclearMiddle = makeTrack(duration: 1.5 + 9 + 6.5) { t -> PoseSample in
+    var sample = benchSet(reps: 3)(t)
+    if abs(t - 6) < 0.3 {
+        for joint in [BodyJoint.neck, .root, .leftShoulder, .rightShoulder, .leftHip, .rightHip] { sample.joints[joint.rawValue] = nil }
+    }
+    return sample
+}
+check(FormAnalyzer.measure(track: unclearMiddle, pattern: .benchPress)?.reps.count == 3, "a triple keeps its first rep when the middle one's torso wasn't seen")
+
+// RDLs start and end standing tall, so they're counted at the bottom.
+let rdlTrack = makeTrack(duration: 18) { t in deadliftPose(t, lift: 1 - 0.6 * repWave(t, lead: 1.5, reps: 5, period: 3)) }
+let rdls = FormAnalyzer.measure(track: rdlTrack, pattern: LiftPattern.of(name: "Romanian Deadlift", category: .legs, equipment: .barbell))
+check(rdls?.reps.count == 5 && zip(rdls?.reps ?? [], [3.0, 6, 9, 12, 15]).allSatisfy { abs($0.turnTime - $1) <= 0.2 },
+      "5 RDLs from the rack are 5 reps, each counted at the bottom (found \(rdls?.reps.map { FormReport.seconds($0.turnTime) } ?? []))")
+// A deadlift single dropped from lockout never comes back down.
+let dropped = makeTrack(duration: 8) { t in deadliftPose(t, lift: ramp(t, 1.5, 3)) }
+check(FormAnalyzer.measure(track: dropped, pattern: .hinge, loggedReps: 1)?.reps.count == 1, "a deadlift single let go at lockout counts when one rep was logged")
+check(FormAnalyzer.measure(track: dropped, pattern: .hinge)?.reps.isEmpty == true, "without the log, a lockout that never comes down isn't counted")
+// Setting the bar down and standing up empty-handed looks like a pull, but isn't one.
+let setDown = makeTrack(duration: 10) { t -> PoseSample in
+    t < 5 ? deadliftPose(t, lift: repWave(t, lead: 1, reps: 1, period: 4)) : deadliftPose(t, lift: ramp(t, 6, 7.5))
+}
+check(FormAnalyzer.measure(track: setDown, pattern: .hinge, loggedReps: 1)?.reps.count == 1, "standing up after setting the bar down isn't a second deadlift")
 
 // MARK: Form check: measuring cleanly
 
