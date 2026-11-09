@@ -16,15 +16,23 @@ enum APIKeyStore {
     }
 
     static func load() -> String? {
+        read().key
+    }
+
+    /// The saved key, with the Keychain's answer: errSecItemNotFound when there's none, and
+    /// errSecInteractionNotAllowed while the phone is locked, since the key is only readable
+    /// while it's unlocked.
+    private static func read() -> (key: String?, status: OSStatus) {
         var search = query
         search[kSecReturnData as String] = true
         search[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        guard SecItemCopyMatching(search as CFDictionary, &result) == errSecSuccess,
+        let status = SecItemCopyMatching(search as CFDictionary, &result)
+        guard status == errSecSuccess,
               let data = result as? Data,
               let key = String(data: data, encoding: .utf8),
-              !key.isEmpty else { return nil }
-        return key
+              !key.isEmpty else { return (nil, status) }
+        return (key, status)
     }
 
     /// Replaces any saved key. Returns false if the Keychain refused it.
@@ -46,8 +54,11 @@ enum APIKeyStore {
         UserDefaults.standard.set(false, forKey: SettingsKey.hasAPIKey)
     }
 
-    /// Keeps the "key saved" setting the screens watch in step with the Keychain.
+    /// Keeps the "key saved" setting the screens watch in step with the Keychain. Only a clear
+    /// answer changes it: a locked phone can't read a key that is there.
     static func refreshFlag() {
-        UserDefaults.standard.set(load() != nil, forKey: SettingsKey.hasAPIKey)
+        let (key, status) = read()
+        guard status == errSecSuccess || status == errSecItemNotFound else { return }
+        UserDefaults.standard.set(key != nil, forKey: SettingsKey.hasAPIKey)
     }
 }

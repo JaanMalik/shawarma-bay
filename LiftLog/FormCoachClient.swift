@@ -12,8 +12,9 @@ enum FormCoachClient {
         return URLSession(configuration: configuration)
     }()
 
-    /// Sends the request body and returns Claude's review. A busy or rate-limited API is tried up
-    /// to three times in all. Anything else is thrown as a FormCoachError, or CancellationError
+    /// Sends the request body and returns Claude's review. A request the API turns away because it's
+    /// busy or rate limited is tried up to three times in all. Once Claude has started on the reply,
+    /// nothing is sent again. Anything else is thrown as a FormCoachError, or CancellationError
     /// when the task is cancelled.
     static func review(apiKey: String, body: Data, onPhase: @escaping @MainActor (FormCoachStream.Phase) -> Void) async throws -> FormCoachReply {
         var request = URLRequest(url: FormCoachRequest.messagesURL)
@@ -39,11 +40,9 @@ enum FormCoachClient {
                         }
                     }
                     try Task.checkCancellation()
-                    do {
-                        return try stream.reply()
-                    } catch let error as FormCoachError where error.isRetryable && attempt < attempts {
-                        // An overload partway through: try again below.
-                    }
+                    // Claude has started on it, which may be billed, so it isn't sent again whatever
+                    // happens: trying again is the lifter's call.
+                    return try stream.reply()
                 } else {
                     var errorBody = Data()
                     for try await byte in bytes {

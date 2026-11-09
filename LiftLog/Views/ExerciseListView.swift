@@ -10,6 +10,7 @@ struct ExerciseListView: View {
     @AppStorage(SettingsKey.formula) private var formula: OneRepMaxFormula = .epley
     @AppStorage(SettingsKey.maxEstimateReps) private var maxEstimateReps = 10
     @AppStorage(SettingsKey.didSeed) private var didSeed = false
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showingAdd = false
     @State private var showingSettings = false
@@ -94,6 +95,10 @@ struct ExerciseListView: View {
                 await Task.detached(priority: .utility) {
                     VideoStore.removeStalePending(keeping: referenced)
                 }.value
+            }
+            // On screen, so the phone is unlocked and the Keychain can say whether a key is saved.
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                if phase == .active { APIKeyStore.refreshFlag() }
             }
         }
     }

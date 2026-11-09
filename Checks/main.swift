@@ -772,7 +772,9 @@ do {
     _ = try overloaded.reply()
     check(false, "an error partway through a stream is reported")
 } catch let error as FormCoachError {
-    check(error.isRetryable, "an overloaded error partway through a stream is retried")
+    // Claude has started on it by then, so sending it again could pay twice for one review.
+    check(!error.isRetryable && error.message == "Claude got busy partway through. Try again in a minute.",
+          "an overloaded error partway through a stream isn't sent again, and says to try again in a minute")
 } catch {
     check(false, "an error partway through a stream is a FormCoachError")
 }
@@ -802,6 +804,52 @@ check(relayReply != nil && relayReply?.feedback == plain?.feedback && relayReply
       "a stream that switches models partway reads the whole answer and names the model that finished it")
 check(approx(relayReply?.cost, declinedCost + fallbackCost, 1e-12) && relayPhases == [.thinking, .writing, .done],
       "a stream that switches models partway prices both attempts")
+
+// What a stream that doesn't end in a review comes to.
+func streamFailure(_ lines: [String]) -> FormCoachError? {
+    var stream = FormCoachStream()
+    for line in lines { stream.feed(line: line) }
+    do {
+        _ = try stream.reply()
+        return nil
+    } catch {
+        return error as? FormCoachError
+    }
+}
+// An error event once Claude has started writing the review. What it did may be billed, so the
+// request isn't sent again by itself.
+func errorPartway(_ type: String) -> FormCoachError? {
+    streamFailure(Array(streamLines.prefix(9)) + [event(["type": "error", "error": ["type": type, "message": "Something went wrong"]])])
+}
+check(["overloaded_error", "api_error", "rate_limit_error", "timeout_error", "some_new_error"].allSatisfy {
+    errorPartway($0)?.isRetryable == false && errorPartway($0)?.message == "Claude got busy partway through. Try again in a minute."
+}, "a busy or failing API partway through a review isn't sent again by itself")
+check(errorPartway("authentication_error")?.isRetryable == false && errorPartway("authentication_error")?.message.contains("API key") == true,
+      "other errors partway through a review keep their own message")
+
+// Claude can capitalize an enum value, which mustn't lose a review that's been paid for.
+check(["Good", "GOOD", "Great", "Needs_work", "Unsafe"].allSatisfy { verdict in reviewed { $0["verdict"] = verdict }?.feedback.verdict == .good },
+      "a capitalized verdict still reads")
+
+// With fallbacks on, a decline that names a model to try means the backup model was too busy to
+// take the check over. That's no reason to change the clip.
+func declined(_ details: [String: Any]) -> Data {
+    (try? JSONSerialization.data(withJSONObject: ["type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": [],
+                                                  "stop_reason": "refusal", "stop_details": details,
+                                                  "usage": ["input_tokens": 13_500, "output_tokens": 0]])) ?? Data()
+}
+let busyBackup: [String: Any] = ["type": "refusal", "category": "bio", "explanation": "Declined.", "recommended_model": "claude-opus-5"]
+let busyBackupMessage = "Claude's backup model was busy, so this check didn't finish. Try again in a few minutes."
+let skippedFallback = failure(declined(busyBackup))
+check(skippedFallback?.message == busyBackupMessage && skippedFallback?.isRetryable == false,
+      "a decline whose backup model was busy says to try again later, not to change the clip")
+let skippedOnStream = streamFailure([streamLines[1],
+                                     event(["type": "message_delta", "delta": ["stop_reason": "refusal", "stop_details": busyBackup], "usage": ["output_tokens": 0]]),
+                                     event(["type": "message_stop"])])
+check(skippedOnStream?.message == busyBackupMessage, "a streamed decline whose backup model was busy says the same")
+var noBackup = busyBackup
+noBackup["recommended_model"] = NSNull()
+check(failure(declined(noBackup)) == .refusal(category: "bio"), "a decline with no model to try is still a decline")
 
 // MARK: Form check: saving
 

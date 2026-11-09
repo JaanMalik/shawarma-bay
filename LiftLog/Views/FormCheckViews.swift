@@ -24,8 +24,11 @@ final class FormCheckRunner {
     private(set) var stage: Stage = .idle
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var runID = UUID()
-    /// Whether LiftLog went into the background during this run.
-    @ObservationIgnored private var wentToBackground = false
+    /// Whether LiftLog is in the background right now, during this run.
+    @ObservationIgnored private var inBackground = false
+    /// Whether this run was stopped because LiftLog went into the background while it was
+    /// finding the reps or taking out the frames.
+    @ObservationIgnored private var stoppedForBackground = false
 
     static let backgroundMessage = "The check stopped because the screen locked or LiftLog was closed. Keep LiftLog open until it's done, and try again."
 
@@ -46,7 +49,8 @@ final class FormCheckRunner {
         task?.cancel()
         let id = UUID()
         runID = id
-        wentToBackground = false
+        inBackground = false
+        stoppedForBackground = false
         stage = .tracking(0)
         task = Task { [weak self] in
             await self?.run(id: id, videoFileName: videoFileName, info: info, pattern: pattern, useClaude: useClaude, onFinish: onFinish)
@@ -66,11 +70,26 @@ final class FormCheckRunner {
     /// with gaps that would look like missed reps. A request to Claude keeps going.
     func appWentToBackground() {
         guard isRunning else { return }
-        wentToBackground = true
+        inBackground = true
         switch stage {
-        case .tracking, .framing: task?.cancel()
+        case .tracking, .framing:
+            stoppedForBackground = true
+            task?.cancel()
         case .idle, .reviewing, .failed: break
         }
+    }
+
+    /// Call when LiftLog is back on screen. A request that kept going while the lifter was away
+    /// and fails later, say when the Wi-Fi drops, isn't blamed on the trip.
+    func appBecameActive() {
+        inBackground = false
+    }
+
+    /// Whether going into the background can have stopped this run: it stopped the tracking or
+    /// framing, LiftLog is still in the background, or iOS's extra time for the request ran out,
+    /// after which iOS suspends LiftLog and the connection can drop.
+    private func causedByBackground(_ backgroundTime: BackgroundTime) -> Bool {
+        stoppedForBackground || inBackground || backgroundTime.ranOut
     }
 
     private func update(_ newStage: Stage, for id: UUID) {
@@ -78,6 +97,9 @@ final class FormCheckRunner {
     }
 
     private func run(id: UUID, videoFileName: String, info: FormCheckContext, pattern: LiftPattern, useClaude: Bool, onFinish: @escaping (FormCheck) -> Void) async {
+        // Begun once the request to Claude is under way. Out here so a failure can tell whether
+        // its time ran out.
+        let backgroundTime = BackgroundTime()
         do {
             guard VideoStore.exists(videoFileName) else {
                 throw FormCheckFailure("The video isn't in LiftLog's Videos folder any more.")
@@ -89,7 +111,7 @@ final class FormCheckRunner {
             try Task.checkCancellation()
             // In the background iOS can stop the phone's pose finder from working, which would
             // leave gaps that look like missed reps. Better to stop than measure from those.
-            if wentToBackground { throw FormCheckFailure(Self.backgroundMessage) }
+            if stoppedForBackground { throw FormCheckFailure(Self.backgroundMessage) }
 
             let measurements = FormAnalyzer.measure(track: track, pattern: pattern, loggedReps: info.reps)
             let frames = FormAnalyzer.keyFrames(track: track, measurements: measurements)
@@ -133,7 +155,6 @@ final class FormCheckRunner {
             let body = try FormCoachRequest.body(system: FormPrompt.system, frames: labeled, text: text)
             // A paid request is under way: if the screen locks or the lifter switches apps, ask
             // iOS for time to let Claude's reply finish arriving.
-            let backgroundTime = BackgroundTime()
             backgroundTime.begin()
             defer { backgroundTime.end() }
             let reply = try await FormCoachClient.review(apiKey: apiKey, body: body) { [weak self] phase in
@@ -150,9 +171,9 @@ final class FormCheckRunner {
         } catch is CancellationError {
             // Stopped here, or the screen closed: then the run is no longer current and nothing
             // is shown. Anything else that cancelled it, such as iOS, gets a message.
-            update(.failed(wentToBackground ? Self.backgroundMessage : "The form check stopped before it finished. Try again."), for: id)
+            update(.failed(causedByBackground(backgroundTime) ? Self.backgroundMessage : "The form check stopped before it finished. Try again."), for: id)
         } catch let error as FormCoachError {
-            if case .network = error, wentToBackground {
+            if case .network = error, causedByBackground(backgroundTime) {
                 update(.failed(Self.backgroundMessage), for: id)
             } else {
                 update(.failed(error.message), for: id)
@@ -186,12 +207,17 @@ struct FormCheckFailure: Error {
 @MainActor
 final class BackgroundTime {
     private var id = UIBackgroundTaskIdentifier.invalid
+    /// Whether the time ran out. iOS suspends LiftLog right after, which can drop the connection.
+    private(set) var ranOut = false
 
     func begin() {
         guard id == .invalid else { return }
         // iOS calls this on the main thread.
         id = UIApplication.shared.beginBackgroundTask(withName: "Form check") { [weak self] in
-            MainActor.assumeIsolated { self?.end() }
+            MainActor.assumeIsolated {
+                self?.ranOut = true
+                self?.end()
+            }
         }
     }
 
@@ -535,7 +561,8 @@ struct FormCheckResultView: View {
 
     private func confidenceText(_ feedback: FormFeedback) -> String? {
         let note = feedback.confidenceNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch (feedback.confidence, note.isEmpty) {
+        // Claude can capitalize the level ("High").
+        switch (feedback.confidence.lowercased(), note.isEmpty) {
         case ("high", true): return nil
         case ("high", false): return note
         case (let level, true): return "Claude's confidence: \(level)."
@@ -597,7 +624,8 @@ struct FormFixRow: View {
     }
 
     private var severityColor: Color {
-        switch fix.severity {
+        // Claude can capitalize the level ("Major").
+        switch fix.severity.lowercased() {
         case "major": return .red
         case "moderate": return .orange
         default: return .secondary

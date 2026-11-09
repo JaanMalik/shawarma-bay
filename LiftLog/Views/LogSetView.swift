@@ -99,6 +99,7 @@ struct LogSetView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { formRunner.appWentToBackground() }
+            if phase == .active { formRunner.appBecameActive() }
         }
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
@@ -198,7 +199,10 @@ struct LogSetView: View {
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
+                // Closing the sheet would stop a form check that's partway through, and what Claude
+                // has done may already be billed. Stop, in the Form check section, ends one on purpose.
                 Button("Cancel") { dismiss() }
+                    .disabled(formRunner.isRunning)
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { save() }

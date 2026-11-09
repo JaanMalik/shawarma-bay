@@ -158,6 +158,13 @@ enum FormVerdict: String, Codable, CaseIterable {
     case needsWork = "needs_work"
     case unsafe
 
+    /// Claude can capitalize a value ("Good"), so any spelling reads rather than losing the whole
+    /// review. A new review's verdict is set from its score and safety flags straight after.
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = FormVerdict(rawValue: value.lowercased()) ?? .needsWork
+    }
+
     var title: String {
         switch self {
         case .great: return "Great form"
@@ -248,7 +255,13 @@ enum FormCoachError: Error, Equatable {
     case spendLimit(message: String)
     /// Busy or rate limited for longer than is worth waiting for in the app.
     case retryLater(seconds: Int, rateLimited: Bool)
+    /// The API got busy after Claude had started on the reply. Not tried again by itself, since
+    /// what Claude did up to then may already be billed.
+    case busyPartway
     case refusal(category: String?)
+    /// A safety filter declined the check, and the backup model that would have taken it over was
+    /// too busy to. The clip isn't the problem, so this says to try again later.
+    case fallbackBusy
     case cutOff
     case noAnswer
     case unreadable
@@ -268,6 +281,8 @@ enum FormCoachError: Error, Equatable {
         case .retryLater(let seconds, let rateLimited):
             let wait = seconds < 120 ? "\(seconds) seconds" : "\(Int((Double(seconds) / 60).rounded(.up))) minutes"
             return rateLimited ? "Too many requests right now. Try again in \(wait)." : "Claude is busy right now. Try again in \(wait)."
+        case .busyPartway:
+            return "Claude got busy partway through. Try again in a minute."
         case .api(let status, let type, let message):
             if status == 401 || type == "authentication_error" {
                 return "Your API key wasn't accepted. Check it in Settings > Form check."
@@ -294,6 +309,8 @@ enum FormCoachError: Error, Equatable {
             return "Claude couldn't check this video (error \(status)).\(detail)"
         case .refusal:
             return "Claude declined to review this video. Try a clip that shows only the lift."
+        case .fallbackBusy:
+            return "Claude's backup model was busy, so this check didn't finish. Try again in a few minutes."
         case .cutOff:
             return "Claude's review was cut off. Try again."
         case .noAnswer, .unreadable:
@@ -313,6 +330,9 @@ enum FormCoachResponse {
         let stop = json["stop_reason"] as? String
         if stop == "refusal" {
             let details = json["stop_details"] as? [String: Any]
+            // The API names a model to try when it skipped the fallback because that model was
+            // rate limited or overloaded.
+            if details?["recommended_model"] is String { throw FormCoachError.fallbackBusy }
             throw FormCoachError.refusal(category: details?["category"] as? String)
         }
         if stop == "max_tokens" { throw FormCoachError.cutOff }
@@ -361,14 +381,16 @@ enum FormCoachResponse {
     }
 
     /// An error event partway through a streamed reply. It names a type but has no HTTP status,
-    /// so it gets the status that type comes with.
+    /// so it gets the status that type comes with. By then Claude has started on the reply, so a
+    /// busy API isn't tried again by itself: the lifter decides.
     static func streamError(type: String, message: String) -> FormCoachError {
         let statuses = [
             "invalid_request_error": 400, "authentication_error": 401, "billing_error": 402,
             "permission_error": 403, "not_found_error": 404, "request_too_large": 413,
             "rate_limit_error": 429, "api_error": 500, "timeout_error": 504, "overloaded_error": 529,
         ]
-        return .api(status: statuses[type] ?? 500, type: type, message: message)
+        let error = FormCoachError.api(status: statuses[type] ?? 500, type: type, message: message)
+        return error.isRetryable ? .busyPartway : error
     }
 }
 
