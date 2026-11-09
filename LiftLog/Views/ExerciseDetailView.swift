@@ -234,9 +234,12 @@ struct SetRow: View {
                 Text("\(unit.format(set.weight)) × \(set.reps)")
                     .font(.body.weight(.semibold))
                     .monospacedDigit()
-                if !prs.isEmpty {
+                if !prs.isEmpty || set.formVerdict != nil {
                     HStack(spacing: 4) {
                         ForEach(prs, id: \.self) { PRBadge(kind: $0) }
+                        if let verdict = set.formVerdict {
+                            FormVerdictChip(verdict: verdict, score: set.formScore)
+                        }
                     }
                 }
                 if !set.note.isEmpty {

@@ -30,6 +30,8 @@ struct SetBackup: Codable {
     /// Name of the set's video in the app's Videos folder. The video itself isn't in the backup.
     /// Optional, so backups from the first version still restore.
     var videoFileName: String?
+    /// The set's form check, as saved in the app (see FormCheck). Optional, for older backups.
+    var formCheckJSON: String?
 }
 
 struct BackupExport: Transferable {
@@ -64,7 +66,8 @@ enum Backup {
                     sortOrder: ex.sortOrder,
                     isArchived: ex.isArchived,
                     sets: ex.sets.sorted { $0.date < $1.date }.map {
-                        SetBackup(id: $0.id, date: $0.date, weightLb: $0.weight, reps: $0.reps, note: $0.note, videoFileName: $0.videoFileName)
+                        SetBackup(id: $0.id, date: $0.date, weightLb: $0.weight, reps: $0.reps, note: $0.note,
+                                  videoFileName: $0.videoFileName, formCheckJSON: $0.formCheck?.encoded())
                     }
                 )
             }
@@ -77,7 +80,7 @@ enum Backup {
 
     static func csv(from exercises: [Exercise], unit: WeightUnit) -> String {
         let formatter = ISO8601DateFormatter()
-        var lines = ["date,exercise,weight_\(unit.rawValue),reps,note,has_video"]
+        var lines = ["date,exercise,weight_\(unit.rawValue),reps,note,has_video,form_check"]
         for ex in exercises {
             for s in ex.sets.sorted(by: { $0.date < $1.date }) {
                 lines.append([
@@ -87,10 +90,18 @@ enum Backup {
                     String(s.reps),
                     quote(s.note),
                     s.videoFileName == nil ? "no" : "yes",
+                    quote(formCheckText(s.formCheck)),
                 ].joined(separator: ","))
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// "Good form 8/10", "measured" for the phone's measurements only, or empty.
+    private static func formCheckText(_ check: FormCheck?) -> String {
+        guard let check else { return "" }
+        guard let feedback = check.feedback else { return "measured" }
+        return "\(feedback.verdict.title) \(feedback.clampedScore)/10"
     }
 
     private static func quote(_ s: String) -> String {
@@ -132,11 +143,16 @@ enum Backup {
                 target = ex
             }
 
-            // Sets already in the app: put back a video link that was lost, if the clip is on the phone.
+            // Sets already in the app: put back a video link that was lost, if the clip is on the phone,
+            // and the form check of that video if the set has none.
             for s in item.sets {
-                if let current = existingSets[s.id], current.videoFileName == nil, VideoStore.exists(s.videoFileName) {
+                guard let current = existingSets[s.id] else { continue }
+                if current.videoFileName == nil, VideoStore.exists(s.videoFileName) {
                     current.videoFileName = s.videoFileName
                     relinkedVideos += 1
+                }
+                if current.formCheckJSON == nil, let check = formCheck(from: s), check.videoFileName == current.videoFileName {
+                    current.formCheck = check
                 }
             }
 
@@ -147,6 +163,9 @@ enum Backup {
                 // into LiftLog's Videos folder it shows up again. Until then the set shows "Video missing".
                 if VideoStore.isSafeName(s.videoFileName) {
                     set.videoFileName = s.videoFileName
+                    if let check = formCheck(from: s), check.videoFileName == s.videoFileName {
+                        set.formCheck = check
+                    }
                 }
                 context.insert(set)
                 target.sets.append(set)
@@ -156,5 +175,9 @@ enum Backup {
         }
         try context.save()
         return (addedExercises, addedSets, relinkedVideos)
+    }
+
+    private static func formCheck(from backup: SetBackup) -> FormCheck? {
+        backup.formCheckJSON.flatMap(FormCheck.decode)
     }
 }

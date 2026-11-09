@@ -69,6 +69,8 @@ struct ExerciseListView: View {
             .sheet(item: $logTarget) { exercise in LogSetView(exercise: exercise) }
             .sheet(isPresented: $showingAdd) { ExerciseEditorView(exercise: nil) }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            // Sample form check screens, only with their launch arguments (for simulator screenshots).
+            .modifier(FormCheckSampleScreens())
             .confirmationDialog(
                 "Delete \(pendingDelete?.name ?? "exercise")?",
                 isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),

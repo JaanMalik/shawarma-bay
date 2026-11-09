@@ -36,4 +36,6 @@ enum SettingsKey {
     static let formula = "oneRepMaxFormula"
     static let maxEstimateReps = "maxEstimateReps"
     static let didSeed = "didSeedExercises"
+    /// Whether an Anthropic API key is saved for form checks. The key itself is in the Keychain.
+    static let hasAPIKey = "hasAnthropicAPIKey"
 }

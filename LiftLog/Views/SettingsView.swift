@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.unit) private var unit: WeightUnit = .lb
     @AppStorage(SettingsKey.formula) private var formula: OneRepMaxFormula = .epley
     @AppStorage(SettingsKey.maxEstimateReps) private var maxEstimateReps = 10
+    @AppStorage(SettingsKey.hasAPIKey) private var hasAPIKey = false
 
     @State private var importing = false
     @State private var message: String?
@@ -35,6 +36,18 @@ struct SettingsView: View {
                     Text("Estimated 1RM")
                 } footer: {
                     Text("A single always counts as your real 1RM. Sets with more reps than this limit are left out of the estimate, because high-rep sets overestimate it.")
+                }
+
+                Section {
+                    NavigationLink {
+                        APIKeyView()
+                    } label: {
+                        LabeledContent("Anthropic API key", value: hasAPIKey ? "Saved" : "Not set")
+                    }
+                } header: {
+                    Text("Form check")
+                } footer: {
+                    Text("Claude can review your form from a set's video and tell you what's good and what to fix. It uses your own Anthropic API key, about 10 to 20 cents a check. Open a set with a video and tap Check my form.")
                 }
 
                 Section {
@@ -65,6 +78,7 @@ struct SettingsView: View {
                     LabeledContent("Exercises", value: "\(exercises.count)")
                     LabeledContent("Sets logged", value: "\(exercises.reduce(0) { $0 + $1.sets.count })")
                     LabeledContent("Videos", value: videoSummary)
+                    LabeledContent("Form checks", value: formCheckSummary)
                 }
             }
             .navigationTitle("Settings")
@@ -90,6 +104,14 @@ struct SettingsView: View {
         guard !names.isEmpty else { return "None" }
         let bytes = names.reduce(Int64(0)) { $0 + VideoStore.fileSize($1) }
         return "\(names.count) · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))"
+    }
+
+    private var formCheckSummary: String {
+        let checks = exercises.flatMap { $0.sets.compactMap(\.formCheck) }
+        guard !checks.isEmpty else { return "None" }
+        let spent = checks.compactMap(\.estimatedCost).reduce(0, +)
+        guard spent > 0 else { return "\(checks.count)" }
+        return "\(checks.count) · about \(spent.formatted(.currency(code: "USD").precision(.fractionLength(2))))"
     }
 
     private func restore(_ result: Result<URL, Error>) {

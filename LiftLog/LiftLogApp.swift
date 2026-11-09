@@ -6,6 +6,7 @@ struct LiftLogApp: App {
     init() {
         // Before any screen looks for a video file.
         VideoStore.migrateLegacyFolder()
+        APIKeyStore.refreshFlag()
     }
 
     var body: some Scene {

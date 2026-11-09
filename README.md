@@ -21,8 +21,14 @@ database. No account, no cloud, no ads.
   unit is kg), the preacher curl shows a curl bar, dumbbell lifts show a dumbbell, and machine
   or cable lifts show a weight stack. It follows the Equipment you pick for the exercise, and
   holds still when Reduce Motion is on.
+- Form check: open a set that has a video and tap **Check my form**. The phone finds you in
+  the video, counts your reps and measures depth, joint angles and tempo, then Claude looks at
+  about 10 key frames and gives a verdict, a score out of 10, what you're doing well, what to
+  fix with a cue for each, and any safety flags. The result is saved with the set and shows in
+  the history. It uses your own Anthropic API key (see below). Without a key, **Measure reps
+  only** gives the phone's measurements on their own.
 - Settings: lb or kg, Epley or Brzycki formula, how many reps count toward the estimate,
-  JSON backup and restore, CSV export, and how much space videos use.
+  the API key for form checks, JSON backup and restore, CSV export, and how much space videos use.
 
 ## How PRs are counted
 
@@ -43,6 +49,31 @@ them in the Files app under **On My iPhone > LiftLog > Videos**, or in Finder on
 the phone plugged in. The JSON backup remembers which set has which video but doesn't contain
 the video files. To move to a new phone, copy the Videos folder over and restore the backup, in
 either order. Deleting a set, or an exercise, deletes its videos (a set with a video asks first).
+
+## Form check with Claude
+
+1. Get an API key: sign in at [platform.claude.com](https://platform.claude.com), add a little
+   credit under **Billing**, then create a key under **Settings > API keys**. API use is billed
+   to that account and is separate from a Claude.ai subscription.
+2. In LiftLog: **Settings > Form check > Anthropic API key**, paste the key and tap **Save key**.
+   LiftLog checks it straight away (that check is free).
+3. Log a set with a video, then tap the set in the history and tap **Check my form**. It takes
+   about a minute. Keep the screen open until it's done.
+
+What it costs: about 10 to 20 cents a check (Claude Opus 5.5 at $4 per million tokens in and $20
+per million out; the result screen shows the actual cost). If a safety filter wrongly declines a
+check, the API retries it on another Claude model by itself, and the result says which model
+answered.
+
+What gets sent: only when you tap the button, about 10 still frames from that set's video, the
+exercise, weight, reps and note, and the phone's measurements. The video itself never leaves the
+phone. The key is stored in the iPhone's Keychain on this device only, and is only sent to
+Anthropic.
+
+For the best results, film from the side at about hip height with your whole body and the bar in
+the picture, in good light. The phone's numbers are 2D estimates, so a front-on clip can't judge
+depth well, and a side-on clip can't see your knees caving in. Claude says when the angle limits
+what it can judge. This is coaching feedback, not medical advice.
 
 ## Install on your iPhone (free Apple ID)
 
@@ -85,18 +116,23 @@ LiftLog/                  App source. Xcode picks up any file added here automat
   ExerciseTypes.swift     Muscle groups and equipment
   EquipmentRules.swift    Which picture each exercise gets and how it moves (no UI code)
   VideoStore.swift        Saving, naming and deleting set videos
+  FormAnalysis.swift      Form check: finding reps and measuring them, key frames (no UI code)
+  FormCoachAPI.swift      Form check: the request to Claude and reading its reply (no UI code)
+  PoseTracker.swift       Finds the lifter's joints in a video with Apple's Vision framework
+  FormCoachClient.swift   Sends a form check to Claude and streams back the review
+  APIKeyStore.swift       Keeps the Anthropic API key in the Keychain
   PRCalculator.swift      All PR math (no UI code)
   SeedData.swift          Starting exercises
   Units.swift             lb/kg and settings keys
   Backup.swift            JSON backup/restore and CSV export
   Views/                  Screens
-Checks/main.swift         Checks for the PR math and equipment rules
+Checks/main.swift         Checks for the PR math, equipment rules and form check logic
 ```
 
-Run the PR math checks on a Mac:
+Run the checks on a Mac:
 
 ```
-swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift LiftLog/ExerciseTypes.swift LiftLog/EquipmentRules.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
+swiftc LiftLog/PRCalculator.swift LiftLog/Units.swift LiftLog/ExerciseTypes.swift LiftLog/EquipmentRules.swift LiftLog/FormAnalysis.swift LiftLog/FormCoachAPI.swift Checks/main.swift -o /tmp/prchecks && /tmp/prchecks
 ```
 
 Requires iOS 17 or newer.

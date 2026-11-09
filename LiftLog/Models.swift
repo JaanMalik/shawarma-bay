@@ -51,6 +51,13 @@ final class LiftSet {
     /// File name of the set's video inside the app's Videos folder (see VideoStore), if one was added.
     /// Optional with a nil default so stores from the first version open without a migration step.
     var videoFileName: String? = nil
+    /// The last form check of the set's video, as JSON (see FormCheck). Optional with a nil default
+    /// like videoFileName, so earlier stores open without a migration step.
+    var formCheckJSON: String? = nil
+    /// That check's verdict and score, kept on their own so the history list doesn't have to read
+    /// every check.
+    var formVerdictRaw: String? = nil
+    var formScore: Int? = nil
     var exercise: Exercise?
 
     init(date: Date, weight: Double, reps: Int, note: String = "") {
@@ -60,8 +67,30 @@ final class LiftSet {
         self.reps = reps
         self.note = note
         self.videoFileName = nil
+        self.formCheckJSON = nil
+        self.formVerdictRaw = nil
+        self.formScore = nil
     }
 
     var record: SetRecord { SetRecord(id: id, date: date, weight: weight, reps: reps) }
     var hasVideo: Bool { videoFileName != nil }
+
+    /// The form check of the set's current video. A check of a video that has since been replaced
+    /// or removed doesn't count.
+    var formCheck: FormCheck? {
+        get {
+            guard let formCheckJSON, let check = FormCheck.decode(formCheckJSON), check.videoFileName == videoFileName else { return nil }
+            return check
+        }
+        set {
+            formCheckJSON = newValue?.encoded()
+            formVerdictRaw = newValue?.feedback?.verdict.rawValue
+            formScore = newValue?.feedback?.clampedScore
+        }
+    }
+
+    var formVerdict: FormVerdict? {
+        guard formCheckJSON != nil else { return nil }
+        return formVerdictRaw.flatMap(FormVerdict.init(rawValue:))
+    }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import SwiftData
 import PhotosUI
 
@@ -34,6 +35,14 @@ struct LogSetView: View {
     @State private var videoError: String?
     @State private var playingVideo: VideoRef?
     @State private var importTask: Task<Void, Never>?
+
+    // Form check of the set's saved video. A finished check is saved with the set right away, since
+    // it may have cost money, whether or not the other changes in the sheet are saved.
+    @State private var formRunner = FormCheckRunner()
+    @State private var showingFormCheck = false
+    @State private var showingKeyEntry = false
+    @AppStorage(SettingsKey.hasAPIKey) private var hasAPIKey = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private var calculator: PRCalculator { PRCalculator(formula: formula, maxRepsForEstimate: maxEstimateReps) }
 
@@ -75,15 +84,53 @@ struct LogSetView: View {
             .navigationTitle(editing == nil ? exercise.name : "Edit set")
             .navigationBarTitleDisplayMode(.inline)
         }
+        // A swipe down would stop a form check that's partway through.
+        .interactiveDismissDisabled(formRunner.isRunning)
         .sensoryFeedback(.success, trigger: saveCount)
         .onAppear(perform: load)
-        .onDisappear(perform: discardPendingVideo)
+        .onDisappear {
+            formRunner.cancel()
+            UIApplication.shared.isIdleTimerDisabled = false
+            discardPendingVideo()
+        }
+        // Keeps the screen from locking while a check runs, since a lock would stop it.
+        .onChange(of: formRunner.isRunning) { _, running in
+            UIApplication.shared.isIdleTimerDisabled = running
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { formRunner.appWentToBackground() }
+        }
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
             importVideo(item)
         }
         .sheet(item: $playingVideo) { video in
             VideoPlayerSheet(fileName: video.fileName, title: exercise.name)
+        }
+        .sheet(isPresented: $showingFormCheck) {
+            if let editing, let check = editing.formCheck {
+                FormCheckResultView(
+                    check: check,
+                    title: exercise.name,
+                    loggedReps: reps,
+                    canAskClaude: hasAPIKey,
+                    onCheckAgain: { useClaude in runFormCheck(useClaude: useClaude) },
+                    onDelete: {
+                        editing.formCheck = nil
+                        try? context.save()
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showingKeyEntry) {
+            NavigationStack {
+                APIKeyView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingKeyEntry = false }
+                        }
+                    }
+            }
         }
         .alert("Video", isPresented: Binding(get: { videoError != nil }, set: { if !$0 { videoError = nil } })) {
             Button("OK") {}
@@ -142,6 +189,8 @@ struct LogSetView: View {
 
             videoSection
 
+            formCheckSection
+
             if let draft {
                 Section("Preview") { preview(draft) }
             }
@@ -154,7 +203,7 @@ struct LogSetView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { save() }
                     .bold()
-                    .disabled(draft == nil || importingVideo)
+                    .disabled(draft == nil || importingVideo || formRunner.isRunning)
             }
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -202,11 +251,16 @@ struct LogSetView: View {
         } header: {
             Text("Video")
         } footer: {
-            Text("Pick a clip you recorded. It's copied into the app, so it stays even if you later delete it from Photos. The backup file keeps which set has which video, but not the videos themselves.")
+            if editing == nil, pendingVideo != nil {
+                Text("Save the set, then tap it in your history to have your form checked.")
+            } else {
+                Text("Pick a clip you recorded. It's copied into the app, so it stays even if you later delete it from Photos. The backup file keeps which set has which video, but not the videos themselves.")
+            }
         }
     }
 
     private func importVideo(_ item: PhotosPickerItem) {
+        formRunner.cancel()
         importTask?.cancel()
         importingVideo = true
         videoError = nil
@@ -240,6 +294,7 @@ struct LogSetView: View {
     }
 
     private func removeVideo() {
+        formRunner.cancel()
         if let pendingVideo {
             VideoStore.delete(pendingVideo)
             self.pendingVideo = nil
@@ -266,17 +321,150 @@ struct LogSetView: View {
             if let adopted = VideoStore.adopt(pendingVideo, forSetID: set.id) {
                 let old = set.videoFileName
                 set.videoFileName = adopted
-                if old != adopted { VideoStore.delete(old) }
+                if old != adopted {
+                    VideoStore.delete(old)
+                    // A check of the old video says nothing about the new one.
+                    set.formCheck = nil
+                }
             } else if removeSavedVideo {
                 VideoStore.delete(set.videoFileName)
                 set.videoFileName = nil
+                set.formCheck = nil
             }
             self.pendingVideo = nil
         } else if removeSavedVideo {
             VideoStore.delete(set.videoFileName)
             set.videoFileName = nil
+            set.formCheck = nil
         }
         removeSavedVideo = false
+    }
+
+    // MARK: Form check
+
+    /// The set's saved video, when the sheet is showing it and no other clip is being added.
+    private var checkableVideo: String? {
+        guard let editing, let video = editing.videoFileName, pendingVideo == nil, !removeSavedVideo, !importingVideo else { return nil }
+        return video
+    }
+
+    @ViewBuilder
+    private var formCheckSection: some View {
+        if let editing, checkableVideo != nil {
+            Section {
+                switch formRunner.stage {
+                case .tracking(let share):
+                    formProgress("Finding your reps…", value: share)
+                case .framing:
+                    formProgress("Picking key frames…")
+                case .reviewing(let phase):
+                    formProgress(reviewingText(phase))
+                case .idle, .failed:
+                    if let message = formRunner.failureMessage {
+                        Label {
+                            Text(message)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        .font(.subheadline)
+                    }
+                    if let check = editing.formCheck {
+                        Button {
+                            showingFormCheck = true
+                        } label: {
+                            FormCheckSummaryRow(check: check)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if hasAPIKey {
+                        Button {
+                            runFormCheck(useClaude: true)
+                        } label: {
+                            Label(editing.formCheck?.feedback == nil ? "Check my form" : "Check again", systemImage: "figure.strengthtraining.traditional")
+                        }
+                    } else {
+                        Button {
+                            showingKeyEntry = true
+                        } label: {
+                            Label("Add your API key to check form", systemImage: "key.fill")
+                        }
+                    }
+                    // Never offered over Claude's review, which it would replace.
+                    if editing.formCheck == nil || (!hasAPIKey && editing.formCheck?.feedback == nil) {
+                        Button {
+                            runFormCheck(useClaude: false)
+                        } label: {
+                            Label("Measure reps only, on this iPhone", systemImage: "ruler")
+                        }
+                    }
+                }
+                if formRunner.isRunning {
+                    Button("Stop") { formRunner.cancel() }
+                }
+            } header: {
+                Text("Form check")
+            } footer: {
+                Text(formCheckFooter)
+            }
+        }
+    }
+
+    private var formCheckFooter: String {
+        if formRunner.isRunning {
+            return "Keep this screen open until it's done."
+        }
+        if hasAPIKey {
+            return "Claude looks at about 10 frames from this video and tells you what's good, what to fix and how. About 10 to 20 cents a check, on your Anthropic account. Film from the side with your whole body in the picture."
+        }
+        return "With your own Anthropic API key, Claude reviews your form from this video. Without one, the phone can still count your reps and measure depth, angles and tempo."
+    }
+
+    private func reviewingText(_ phase: FormCoachStream.Phase) -> String {
+        switch phase {
+        case .waiting: return "Sending the frames to Claude…"
+        case .thinking: return "Claude is studying your form…"
+        case .writing: return "Claude is writing your review…"
+        case .done: return "Finishing up…"
+        }
+    }
+
+    @ViewBuilder
+    private func formProgress(_ text: String, value: Double? = nil) -> some View {
+        if let value {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(text)
+                    .foregroundStyle(.secondary)
+                ProgressView(value: value)
+            }
+            .padding(.vertical, 2)
+        } else {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(text)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func runFormCheck(useClaude: Bool) {
+        guard let editing, let video = checkableVideo else { return }
+        // What's in the sheet now, so a corrected weight or rep count is what Claude is told.
+        let info = FormCheckContext(
+            exerciseName: exercise.name,
+            category: exercise.category,
+            equipment: exercise.equipment,
+            weightText: unit.format(weightInPounds ?? editing.weight),
+            reps: reps,
+            weightNote: exercise.weightNote,
+            note: note
+        )
+        let pattern = LiftPattern.of(name: exercise.name, category: exercise.category, equipment: exercise.equipment)
+        formRunner.start(videoFileName: video, info: info, pattern: pattern, useClaude: useClaude) { check in
+            guard editing.videoFileName == check.videoFileName else { return }
+            editing.formCheck = check
+            try? context.save()
+            showingFormCheck = true
+        }
     }
 
     // MARK: Preview
